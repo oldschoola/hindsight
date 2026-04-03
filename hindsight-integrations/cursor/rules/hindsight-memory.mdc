@@ -1,0 +1,12 @@
+---
+description: Use Hindsight long-term memory to recall context from past sessions and retain important decisions
+alwaysApply: true
+---
+
+You have access to Hindsight long-term memory through MCP tools. Use them proactively:
+
+- **Before answering questions** about project architecture, past decisions, or user preferences, use `recall` to check if relevant context exists from prior sessions.
+- **After the user shares important information** like architectural decisions, tool preferences, project conventions, or debugging insights, use `retain` to store it for future sessions.
+- **For complex questions**, use `reflect` to get a synthesized answer from memory rather than raw recall results.
+
+Do not recall for simple, self-contained coding tasks. Only use memory when prior context would genuinely improve your response.

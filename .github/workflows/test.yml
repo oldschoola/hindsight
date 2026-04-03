@@ -42,6 +42,7 @@ jobs:
       integrations-llamaindex: ${{ steps.filter.outputs.integrations-llamaindex }}
       integrations-paperclip: ${{ steps.filter.outputs.integrations-paperclip }}
       integrations-opencode: ${{ steps.filter.outputs.integrations-opencode }}
+      integrations-cursor: ${{ steps.filter.outputs.integrations-cursor }}
       integrations-n8n: ${{ steps.filter.outputs.integrations-n8n }}
       integrations-cloudflare-oauth-proxy: ${{ steps.filter.outputs.integrations-cloudflare-oauth-proxy }}
       integrations-lockfiles: ${{ steps.filter.outputs.integrations-lockfiles }}
@@ -131,6 +132,8 @@ jobs:
             - 'hindsight-integrations/paperclip/**'
           integrations-opencode:
             - 'hindsight-integrations/opencode/**'
+          integrations-cursor:
+            - 'hindsight-integrations/cursor/**'
           integrations-n8n:
             - 'hindsight-integrations/n8n/**'
           integrations-cloudflare-oauth-proxy:
@@ -415,6 +418,32 @@ jobs:
 
     - name: Run tests
       working-directory: ./hindsight-integrations/claude-code
+      run: python -m pytest tests/ -v
+
+  test-cursor-integration:
+    needs: [detect-changes]
+    if: >-
+      github.event_name != 'pull_request_review' &&
+      (github.event_name == 'workflow_dispatch' ||
+      needs.detect-changes.outputs.integrations-cursor == 'true' ||
+      needs.detect-changes.outputs.ci == 'true')
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        ref: ${{ github.event.pull_request.head.sha || '' }}
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: '3.11'
+
+    - name: Install pytest
+      run: pip install pytest
+
+    - name: Run tests
+      working-directory: ./hindsight-integrations/cursor
       run: python -m pytest tests/ -v
 
   test-codex-integration:
@@ -3990,6 +4019,7 @@ jobs:
       - build-openclaw-integration
       - smoke-openclaw-install
       - test-claude-code-integration
+      - test-cursor-integration
       - test-codex-integration
       - build-ai-sdk-integration
       - test-ai-sdk-integration-deno
