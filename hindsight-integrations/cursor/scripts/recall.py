@@ -167,10 +167,11 @@ def main():
     write_state(
         LAST_RECALL_STATE,
         {
-            "context": context_message,
             "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "bank_id": bank_id,
+            "mode": "plugin",
             "result_count": len(results),
+            "query_length": len(query),
         },
     )
 

@@ -43,6 +43,8 @@ class TestLoadConfig:
         settings_path = tmp_path / "settings.json"
         settings_path.write_text(json.dumps(settings))
         monkeypatch.setenv("CURSOR_PLUGIN_ROOT", str(tmp_path))
+        # Prevent real user config from interfering
+        monkeypatch.setattr("os.path.expanduser", lambda _: str(tmp_path / "fakehome"))
         config = load_config()
         assert config["bankId"] == "test-bank"
         assert config["debug"] is True

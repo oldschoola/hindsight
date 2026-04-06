@@ -8,6 +8,23 @@ description: "Add long-term memory to Cursor with Hindsight. Automatically captu
 
 Biomimetic long-term memory for [Cursor](https://cursor.com) using [Hindsight](https://vectorize.io/hindsight). Automatically captures conversations and intelligently recalls relevant context — adapted to Cursor's hook-based plugin architecture.
 
+[View Changelog →](/changelog/integrations/cursor)
+
+## Plugin Mode vs MCP Mode
+
+Hindsight works with Cursor in two ways. Choose one to start with.
+
+| | Plugin Mode | MCP Mode |
+|--|-------------|----------|
+| **Install** | Copy files to `.cursor-plugin/hindsight-memory` | Add entry to `.cursor/mcp.json` |
+| **How it works** | Hooks fire automatically on every prompt and task completion | Agent calls Hindsight tools explicitly |
+| **Recall** | Silent — memories injected via `additionalContext` | Visible — agent runs `recall` tool |
+| **Retain** | Automatic on task stop | Agent decides when to call `retain` |
+| **Reflect** | Not available (use MCP for reflect) | Available as a tool |
+| **Best for** | Ambient memory with no user intervention | Explicit control over when memory is used |
+
+**Do I need both?** Usually no. Start with one mode. If you enable both, MCP tool calls can make it harder to tell whether plugin hooks are working.
+
 ## Quick Start
 
 ```bash
@@ -181,9 +198,25 @@ Auto-retain runs after the agent completes a task. It extracts the conversation 
 |---------|---------|---------|-------------|
 | `debug` | `HINDSIGHT_DEBUG` | `false` | Enable verbose logging to stderr. Prefixed with `[Hindsight]`. |
 
+## Verifying Plugin Hooks
+
+The plugin writes status files after each hook run. Check them to confirm hooks are firing:
+
+```bash
+# Check last recall (updated on every beforeSubmitPrompt)
+cat "$CURSOR_PLUGIN_DATA/state/last_recall.json"
+
+# Check last retain (updated on every stop)
+cat "$CURSOR_PLUGIN_DATA/state/last_retain.json"
+```
+
+Each file contains a timestamp, bank ID, mode (`plugin`), and result count (recall) or message count (retain). If these files update when you use Cursor, the plugin hooks are working.
+
 ## Troubleshooting
 
 **Plugin not activating**: Check that `.cursor-plugin/plugin.json` exists in the plugin directory. Enable `"debug": true` in `~/.hindsight/cursor.json` and check stderr output.
+
+**Seeing "Ran Recall in hindsight" in the Agent Window?** That is MCP, not the plugin. Plugin-based recall is silent — it injects context via `additionalContext` without a visible tool call. If you see explicit Hindsight tool calls, you have MCP configured in `.cursor/mcp.json`.
 
 **Recall returning no memories**: Verify the Hindsight server is reachable (`curl http://localhost:9077/health`). Memories need at least one retain cycle.
 

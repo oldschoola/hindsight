@@ -29,7 +29,9 @@ from lib.content import (
     slice_last_turns_by_user_boundary,
 )
 from lib.daemon import get_api_url
-from lib.state import increment_turn_count
+from lib.state import increment_turn_count, write_state
+
+LAST_RETAIN_STATE = "last_retain.json"
 
 
 def read_transcript(transcript_path: str) -> list:
@@ -195,6 +197,19 @@ def main():
             timeout=15,
         )
         debug_log(config, f"Retain response: {json.dumps(response)[:200]}")
+
+        # Write state file for diagnostics
+        write_state(
+            LAST_RETAIN_STATE,
+            {
+                "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "bank_id": bank_id,
+                "mode": "plugin",
+                "document_id": document_id,
+                "message_count": message_count,
+                "transcript_chars": len(transcript),
+            },
+        )
     except Exception as e:
         print(f"[Hindsight] Retain failed: {e}", file=sys.stderr)
 
