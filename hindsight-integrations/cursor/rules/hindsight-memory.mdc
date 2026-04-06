@@ -3,10 +3,11 @@ description: Use Hindsight long-term memory to recall context from past sessions
 alwaysApply: true
 ---
 
-You have access to Hindsight long-term memory through MCP tools. Use them proactively:
+You have access to Hindsight long-term memory through the Hindsight plugin. Memory is managed automatically:
 
-- **Before answering questions** about project architecture, past decisions, or user preferences, use `recall` to check if relevant context exists from prior sessions.
-- **After the user shares important information** like architectural decisions, tool preferences, project conventions, or debugging insights, use `retain` to store it for future sessions.
-- **For complex questions**, use `reflect` to get a synthesized answer from memory rather than raw recall results.
+- **Recall happens before each prompt** — the plugin queries Hindsight for relevant memories and injects them as hidden context. If you see a `<hindsight_memories>` block, use those memories to inform your response.
+- **Retain happens after each task** — the plugin stores the conversation transcript to Hindsight for future use. No action needed from you.
+- **When memories conflict with current context**, prefer current context and note the discrepancy.
+- **Do not expose raw memory metadata** to the user unless asked.
 
-Do not recall for simple, self-contained coding tasks. Only use memory when prior context would genuinely improve your response.
+Prioritize recalled memories that are directly relevant to the current task. Ignore memories that are not applicable.

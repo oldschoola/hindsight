@@ -112,6 +112,7 @@ def main():
         api_url = get_api_url(config, debug_fn=_dbg, allow_daemon_start=False)
     except RuntimeError as e:
         print(f"[Hindsight] {e}", file=sys.stderr)
+        _write_recall_status("error", reason=f"api_url: {e}"[:200])
         return
 
     api_token = config.get("hindsightApiToken")
@@ -119,6 +120,7 @@ def main():
         client = HindsightClient(api_url, api_token)
     except ValueError as e:
         print(f"[Hindsight] Invalid API URL: {e}", file=sys.stderr)
+        _write_recall_status("error", reason=f"invalid_url: {e}"[:200])
         return
 
     # Derive bank ID

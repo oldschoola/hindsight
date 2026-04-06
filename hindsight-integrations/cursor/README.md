@@ -7,15 +7,25 @@ Biomimetic long-term memory for [Cursor](https://cursor.com) using [Hindsight](h
 ### 1. Install the plugin
 
 ```bash
-mkdir -p /path/to/your-project/.cursor-plugin
-cp -r hindsight-integrations/cursor /path/to/your-project/.cursor-plugin/hindsight-memory
+pip install hindsight-cursor
+cd /path/to/your-project
+hindsight-cursor init
 ```
 
-> If Cursor is already open, **fully quit and reopen it** after adding the plugin. Plugins load at startup.
+Or with [uvx](https://docs.astral.sh/uv/) (no permanent install needed):
+
+```bash
+cd /path/to/your-project
+uvx hindsight-cursor init
+```
+
+This copies the plugin files into `.cursor-plugin/hindsight-memory/` and creates a default `~/.hindsight/cursor.json` config if one does not exist.
+
+> If Cursor is already open, **fully quit and reopen it** after installing. Plugins load at startup.
 
 ### 2. Configure Hindsight
 
-Create `~/.hindsight/cursor.json`:
+Edit `~/.hindsight/cursor.json` (created by `init`):
 
 **Option A — Hindsight Cloud** (no local server needed):
 
@@ -27,7 +37,7 @@ Create `~/.hindsight/cursor.json`:
 }
 ```
 
-Sign up at [Hindsight Cloud](https://ui.hindsight.vectorize.io/signup) to get a token.
+Sign up at [Hindsight Cloud](https://ui.hindsight.vectorize.io/signup) to get a token. Go to **Settings > API Keys** in the dashboard to create one.
 
 **Option B — Local server:**
 
@@ -58,7 +68,7 @@ Open the target project in Cursor. The plugin activates automatically.
 - **On-demand recall** — use the `hindsight-recall` skill to manually query memories
 - **Daemon management** — can auto-start/stop `hindsight-embed` locally or connect to an external Hindsight server
 - **Dynamic bank IDs** — supports per-agent, per-project, or per-session memory isolation
-- **Zero dependencies** — pure Python stdlib, no pip install required
+- **Zero runtime dependencies** — plugin scripts use pure Python stdlib only
 
 ## Architecture
 
