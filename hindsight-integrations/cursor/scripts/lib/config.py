@@ -31,14 +31,14 @@ DEFAULTS = {
     "retainTags": [],
     "retainMetadata": {},
     # Connection
-    "hindsightApiUrl": None,
+    "hindsightApiUrl": "",
     "hindsightApiToken": None,
     "apiPort": 9077,
-    "daemonIdleTimeout": 0,
+    "daemonIdleTimeout": 300,
     "embedVersion": "latest",
     "embedPackagePath": None,
     # Bank
-    "bankId": None,
+    "bankId": "cursor",
     "bankIdPrefix": "",
     "dynamicBankId": False,
     "dynamicBankGranularity": ["agent", "project"],

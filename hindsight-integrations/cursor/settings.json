@@ -20,7 +20,7 @@
   "retainContext": "cursor",
   "hindsightApiToken": null,
   "apiPort": 9077,
-  "daemonIdleTimeout": 0,
+  "daemonIdleTimeout": 300,
   "embedVersion": "latest",
   "embedPackagePath": null,
   "bankIdPrefix": "",

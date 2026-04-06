@@ -154,7 +154,9 @@ All settings live in `~/.hindsight/cursor.json`. Every setting can also be overr
 | `hindsightApiUrl` | `HINDSIGHT_API_URL` | `""` | URL of an external Hindsight API server |
 | `hindsightApiToken` | `HINDSIGHT_API_TOKEN` | `null` | Authentication token for the external API |
 | `apiPort` | `HINDSIGHT_API_PORT` | `9077` | Port for the local `hindsight-embed` daemon |
+| `daemonIdleTimeout` | `HINDSIGHT_DAEMON_IDLE_TIMEOUT` | `300` | Seconds before idle daemon shuts down (0 = never) |
 | `embedVersion` | `HINDSIGHT_EMBED_VERSION` | `"latest"` | Version of `hindsight-embed` to install |
+| `embedPackagePath` | `HINDSIGHT_EMBED_PACKAGE_PATH` | `null` | Local path to `hindsight-embed` package (dev override) |
 
 ### Memory Bank
 
@@ -162,7 +164,11 @@ All settings live in `~/.hindsight/cursor.json`. Every setting can also be overr
 |---------|---------|---------|-------------|
 | `bankId` | `HINDSIGHT_BANK_ID` | `"cursor"` | Bank ID when `dynamicBankId` is false |
 | `dynamicBankId` | `HINDSIGHT_DYNAMIC_BANK_ID` | `false` | Derive bank ID from context fields |
+| `dynamicBankGranularity` | — | `["agent", "project"]` | Fields used to derive dynamic bank ID (agent, project, session) |
+| `bankIdPrefix` | — | `""` | Prefix prepended to all bank IDs |
 | `agentName` | `HINDSIGHT_AGENT_NAME` | `"cursor"` | Agent name for dynamic bank ID |
+| `bankMission` | `HINDSIGHT_BANK_MISSION` | `""` | Mission statement set on the bank (first use only) |
+| `retainMission` | — | `null` | Custom retain mission for the bank |
 
 ### Auto-Recall
 
@@ -171,14 +177,31 @@ All settings live in `~/.hindsight/cursor.json`. Every setting can also be overr
 | `autoRecall` | `HINDSIGHT_AUTO_RECALL` | `true` | Enable/disable auto-recall |
 | `recallBudget` | `HINDSIGHT_RECALL_BUDGET` | `"mid"` | Search thoroughness: low, mid, high |
 | `recallMaxTokens` | `HINDSIGHT_RECALL_MAX_TOKENS` | `1024` | Max tokens in recalled memory block |
+| `recallTypes` | — | `["world", "experience"]` | Memory types to recall |
+| `recallContextTurns` | `HINDSIGHT_RECALL_CONTEXT_TURNS` | `1` | Number of prior turns to include in recall query |
+| `recallMaxQueryChars` | `HINDSIGHT_RECALL_MAX_QUERY_CHARS` | `800` | Max characters in the recall query |
+| `recallPromptPreamble` | — | *(see settings.json)* | Text prepended to recalled memories |
 
 ### Auto-Retain
 
 | Setting | Env Var | Default | Description |
 |---------|---------|---------|-------------|
 | `autoRetain` | `HINDSIGHT_AUTO_RETAIN` | `true` | Enable/disable auto-retain |
-| `retainEveryNTurns` | `HINDSIGHT_RETAIN_EVERY_N_TURNS` | `10` | Retain frequency |
+| `retainMode` | `HINDSIGHT_RETAIN_MODE` | `"full-session"` | Retention strategy: `full-session` or `chunked` |
+| `retainEveryNTurns` | `HINDSIGHT_RETAIN_EVERY_N_TURNS` | `10` | Retain every N turns (1 = every turn) |
+| `retainOverlapTurns` | — | `2` | Overlap turns between chunks (chunked mode only) |
+| `retainToolCalls` | — | `false` | Include tool call messages in retained transcript |
 | `retainContext` | `HINDSIGHT_RETAIN_CONTEXT` | `"cursor"` | Source label for retained memories |
+| `retainTags` | — | `[]` | Tags applied to retained documents (supports `{session_id}` template) |
+| `retainMetadata` | — | `{}` | Extra metadata on retained documents |
+
+### LLM (Daemon Mode)
+
+| Setting | Env Var | Default | Description |
+|---------|---------|---------|-------------|
+| `llmProvider` | `HINDSIGHT_LLM_PROVIDER` | `null` | LLM provider override for daemon mode |
+| `llmModel` | `HINDSIGHT_LLM_MODEL` | `null` | LLM model override for daemon mode |
+| `llmApiKeyEnv` | — | `null` | Environment variable name containing the LLM API key |
 
 ### Debug
 

@@ -113,7 +113,7 @@ def main():
 
     # Retention mode: full session (default) or chunked
     retain_mode = config.get("retainMode", "full-session")
-    retain_every_n = max(1, config.get("retainEveryNTurns", 1))
+    retain_every_n = max(1, config.get("retainEveryNTurns", 10))
     retain_full_window = False
     messages_to_retain = all_messages
 
