@@ -1,7 +1,7 @@
 """Bank ID derivation and mission management for Cursor plugin.
 
-Supports static bank IDs ("cursor") or dynamic per-project IDs
-derived from the working directory.
+Supports static bank IDs ("cursor") or dynamic bank IDs derived from
+the Cursor session context.
 """
 
 import os
@@ -12,7 +12,7 @@ from .state import read_state, write_state
 
 DEFAULT_BANK_NAME = "cursor"
 
-VALID_FIELDS = {"agent", "project", "channel", "user"}
+VALID_FIELDS = {"agent", "project", "session", "channel", "user"}
 
 
 def derive_bank_id(hook_input: dict, config: dict) -> str:
@@ -40,6 +40,7 @@ def derive_bank_id(hook_input: dict, config: dict) -> str:
             )
 
     cwd = hook_input.get("cwd", "")
+    session_id = hook_input.get("conversation_id") or hook_input.get("session_id", "")
     agent_name = config.get("agentName", "cursor")
     channel_id = os.environ.get("HINDSIGHT_CHANNEL_ID", "")
     user_id = os.environ.get("HINDSIGHT_USER_ID", "")
@@ -47,6 +48,7 @@ def derive_bank_id(hook_input: dict, config: dict) -> str:
     field_map = {
         "agent": agent_name,
         "project": os.path.basename(cwd) if cwd else "unknown",
+        "session": session_id or "unknown",
         "channel": channel_id or "default",
         "user": user_id or "anonymous",
     }

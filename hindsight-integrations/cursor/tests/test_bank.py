@@ -46,6 +46,17 @@ class TestDeriveBankId:
         result = derive_bank_id(hook_input, config)
         assert result == "cursor::my-project"
 
+    def test_dynamic_mode_session(self):
+        config = {
+            "dynamicBankId": True,
+            "dynamicBankGranularity": ["session"],
+            "bankIdPrefix": "",
+            "agentName": "cursor",
+        }
+        hook_input = {"conversation_id": "cursor-session-123"}
+        result = derive_bank_id(hook_input, config)
+        assert result == "cursor-session-123"
+
     def test_dynamic_mode_with_prefix(self):
         config = {
             "dynamicBankId": True,
