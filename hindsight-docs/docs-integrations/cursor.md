@@ -29,6 +29,7 @@ Hindsight works with Cursor in two ways. Choose one to start with.
 
 ```bash
 # 1. Copy the plugin into your project
+mkdir -p /path/to/your-project/.cursor-plugin
 cp -r hindsight-integrations/cursor /path/to/your-project/.cursor-plugin/hindsight-memory
 
 # 2. Configure your LLM provider for memory extraction
@@ -38,14 +39,27 @@ export OPENAI_API_KEY="sk-your-key"
 # Option B: Anthropic (auto-detected)
 export ANTHROPIC_API_KEY="your-key"
 
-# Option C: Connect to an external Hindsight server
+# Option C: Connect to Hindsight Cloud (no local LLM needed)
 mkdir -p ~/.hindsight
-echo '{"hindsightApiUrl": "https://your-hindsight-server.com"}' > ~/.hindsight/cursor.json
+cat > ~/.hindsight/cursor.json << 'EOF'
+{
+  "hindsightApiUrl": "https://api.hindsight.vectorize.io",
+  "hindsightApiToken": "YOUR_HINDSIGHT_API_TOKEN"
+}
+EOF
+
+# Option D: Connect to a self-hosted Hindsight server
+# echo '{"hindsightApiUrl": "https://your-server.com"}' > ~/.hindsight/cursor.json
 
 # 3. Open Cursor — the plugin activates automatically
+# If Cursor is already open, fully quit and reopen it.
 ```
 
 That's it! The plugin will automatically start capturing and recalling memories.
+
+:::caution
+If you add the plugin to an already-open workspace, **fully quit Cursor and reopen it**. Plugins are loaded at startup — a simple window reload is not enough.
+:::
 
 :::tip Alternative: MCP Integration
 Cursor also supports MCP servers natively. If you prefer MCP over the plugin system, see [Local MCP Server](./local-mcp) and add Hindsight to `.cursor/mcp.json`:
@@ -200,17 +214,22 @@ Auto-retain runs after the agent completes a task. It extracts the conversation 
 
 ## Verifying Plugin Hooks
 
-The plugin writes status files after each hook run. Check them to confirm hooks are firing:
+The plugin writes a status file on every hook invocation — even when no memories are found or retain is skipped. Check them to confirm hooks are firing:
 
 ```bash
-# Check last recall (updated on every beforeSubmitPrompt)
-cat "$CURSOR_PLUGIN_DATA/state/last_recall.json"
-
-# Check last retain (updated on every stop)
-cat "$CURSOR_PLUGIN_DATA/state/last_retain.json"
+# Default location when CURSOR_PLUGIN_DATA is not set:
+cat ~/.hindsight/cursor-state/state/last_recall.json
+cat ~/.hindsight/cursor-state/state/last_retain.json
 ```
 
-Each file contains a timestamp, bank ID, mode (`plugin`), and result count (recall) or message count (retain). If these files update when you use Cursor, the plugin hooks are working.
+Each file contains:
+- `saved_at` — timestamp of the last invocation
+- `status` — one of `success`, `empty`, `skipped`, or `error`
+- `bank_id` — which bank was used (present on `success` and `empty`)
+- `mode` — always `plugin`
+- `result_count` (recall) or `message_count` (retain) — present on `success`
+
+If `saved_at` updates when you use Cursor, the hooks are firing. Check `status` to understand what happened.
 
 ## Troubleshooting
 

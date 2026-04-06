@@ -65,11 +65,26 @@ def read_transcript_messages(transcript_path: str) -> list:
     return messages
 
 
+def _write_recall_status(status: str, **extra):
+    """Write recall diagnostics on every invocation."""
+    data = {
+        "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "mode": "plugin",
+        "status": status,
+    }
+    data.update(extra)
+    try:
+        write_state(LAST_RECALL_STATE, data)
+    except Exception:
+        pass
+
+
 def main():
     config = load_config()
 
     if not config.get("autoRecall"):
         debug_log(config, "Auto-recall disabled, exiting")
+        _write_recall_status("skipped", reason="disabled")
         return
 
     # Read hook input from stdin
@@ -77,6 +92,7 @@ def main():
         hook_input = json.load(sys.stdin)
     except (json.JSONDecodeError, EOFError):
         print("[Hindsight] Failed to read hook input", file=sys.stderr)
+        _write_recall_status("error", reason="bad_stdin")
         return
 
     debug_log(config, f"Hook input keys: {list(hook_input.keys())}")
@@ -85,6 +101,7 @@ def main():
     prompt = (hook_input.get("prompt") or hook_input.get("user_prompt") or "").strip()
     if not prompt or len(prompt) < 5:
         debug_log(config, "Prompt too short for recall, skipping")
+        _write_recall_status("skipped", reason="short_prompt")
         return
 
     # Resolve API URL
@@ -141,11 +158,13 @@ def main():
         )
     except Exception as e:
         print(f"[Hindsight] Recall failed: {e}", file=sys.stderr)
+        _write_recall_status("error", reason=str(e)[:200], bank_id=bank_id)
         return
 
     results = response.get("results", [])
     if not results:
         debug_log(config, "No memories found")
+        _write_recall_status("empty", bank_id=bank_id, query_length=len(query))
         return
 
     debug_log(config, f"Injecting {len(results)} memories")
@@ -164,16 +183,7 @@ def main():
     )
 
     # Save last recall to state
-    write_state(
-        LAST_RECALL_STATE,
-        {
-            "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "bank_id": bank_id,
-            "mode": "plugin",
-            "result_count": len(results),
-            "query_length": len(query),
-        },
-    )
+    _write_recall_status("success", bank_id=bank_id, result_count=len(results), query_length=len(query))
 
     # Output for Cursor hook system
     output = {

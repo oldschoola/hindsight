@@ -18,6 +18,14 @@ The Hindsight plugin for Cursor fixes this. It hooks into the `beforeSubmitPromp
 
 <!-- truncate -->
 
+## TL;DR
+
+- Cursor 3 plugins can add hooks, skills, and rules, but they still do not give Cursor durable cross-session memory on their own
+- The Hindsight Cursor plugin adds automatic recall before each prompt and automatic retain after each task
+- You can run it against Hindsight Cloud, a self-hosted Hindsight API, or Cursor's native MCP support if you prefer explicit tools
+- Memory can stay global, per project, per session, or per user depending on how you configure bank IDs
+- The plugin is pure Python stdlib, so there is nothing to install inside your project beyond the plugin files
+
 ## The Problem: Session-Scoped Memory
 
 Cursor's built-in context system is designed around the current session. You get your codebase, your open files, and whatever you type. That's great for single-session tasks, but it falls apart for anything that spans multiple sessions:
@@ -63,6 +71,7 @@ The plugin also registers a `hindsight-recall` skill. If you want to explicitly 
 **Step 1:** Install the plugin into your project:
 
 ```bash
+mkdir -p /path/to/your-project/.cursor-plugin
 cp -r hindsight-integrations/cursor /path/to/your-project/.cursor-plugin/hindsight-memory
 ```
 
@@ -74,16 +83,23 @@ export OPENAI_API_KEY="sk-your-key"
 export ANTHROPIC_API_KEY="your-key"
 ```
 
-Or connect to an existing Hindsight server:
+Or connect to Hindsight Cloud (no local LLM needed):
 
 ```bash
 mkdir -p ~/.hindsight
-echo '{"hindsightApiUrl": "https://your-server.com"}' > ~/.hindsight/cursor.json
+cat > ~/.hindsight/cursor.json << 'EOF'
+{
+  "hindsightApiUrl": "https://api.hindsight.vectorize.io",
+  "hindsightApiToken": "YOUR_HINDSIGHT_API_TOKEN"
+}
+EOF
 ```
 
-**Step 3:** Open Cursor. The plugin activates automatically.
+Sign up at [Hindsight Cloud](https://ui.hindsight.vectorize.io/signup) to get a token.
 
-That's it. No pip install, no npm install, no build step. The plugin is pure Python stdlib.
+**Step 3:** If Cursor is already open, **fully quit and reopen it** — plugins load at startup. The plugin activates automatically.
+
+No pip install, no npm install, no build step. The plugin is pure Python stdlib.
 
 ## Per-Project Memory Isolation
 
@@ -115,6 +131,16 @@ If you'd rather use Cursor's native MCP support instead of the plugin system, Hi
 ```
 
 This gives you explicit `retain`, `recall`, and `reflect` tools. The plugin approach is more automatic (hooks fire without you asking); the MCP approach gives you more control.
+
+## Cookbook Demo
+
+If you want a minimal reproducible demo before wiring the plugin into your real project, use the Cursor cookbook example:
+
+- Seed a bank with sample coding preferences and project facts
+- Open Cursor 3 in a test repository with the plugin installed
+- Ask questions like `what testing framework do I prefer?` or `what stack is this project using?`
+
+The cookbook lives alongside the other Hindsight examples in `hindsight-cookbook/applications/cursor-memory`.
 
 ## What's Next
 

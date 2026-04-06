@@ -34,6 +34,20 @@ from lib.state import increment_turn_count, write_state
 LAST_RETAIN_STATE = "last_retain.json"
 
 
+def _write_retain_status(status: str, **extra):
+    """Write retain diagnostics on every invocation."""
+    data = {
+        "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "mode": "plugin",
+        "status": status,
+    }
+    data.update(extra)
+    try:
+        write_state(LAST_RETAIN_STATE, data)
+    except Exception:
+        pass
+
+
 def read_transcript(transcript_path: str) -> list:
     """Read a JSONL transcript file and return list of message dicts.
 
@@ -72,6 +86,7 @@ def main():
 
     if not config.get("autoRetain"):
         debug_log(config, "Auto-retain disabled, exiting")
+        _write_retain_status("skipped", reason="disabled")
         return
 
     # Read hook input from stdin
@@ -91,6 +106,7 @@ def main():
     all_messages = read_transcript(transcript_path)
     if not all_messages:
         debug_log(config, "No messages in transcript, skipping retain")
+        _write_retain_status("skipped", reason="empty_transcript")
         return
 
     debug_log(config, f"Read {len(all_messages)} messages from transcript")
@@ -106,6 +122,7 @@ def main():
         if turn_count % retain_every_n != 0:
             next_at = ((turn_count // retain_every_n) + 1) * retain_every_n
             debug_log(config, f"Turn {turn_count}/{retain_every_n}, skipping retain (next at turn {next_at})")
+            _write_retain_status("skipped", reason="turn_window", turn=turn_count, next_at=next_at)
             return
 
     if retain_mode == "chunked" and retain_every_n > 1:
@@ -129,6 +146,7 @@ def main():
 
     if not transcript:
         debug_log(config, "Empty transcript after formatting, skipping retain")
+        _write_retain_status("skipped", reason="empty_after_format")
         return
 
     # Resolve API URL
@@ -197,21 +215,13 @@ def main():
             timeout=15,
         )
         debug_log(config, f"Retain response: {json.dumps(response)[:200]}")
-
-        # Write state file for diagnostics
-        write_state(
-            LAST_RETAIN_STATE,
-            {
-                "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "bank_id": bank_id,
-                "mode": "plugin",
-                "document_id": document_id,
-                "message_count": message_count,
-                "transcript_chars": len(transcript),
-            },
+        _write_retain_status(
+            "success", bank_id=bank_id, document_id=document_id,
+            message_count=message_count, transcript_chars=len(transcript),
         )
     except Exception as e:
         print(f"[Hindsight] Retain failed: {e}", file=sys.stderr)
+        _write_retain_status("error", reason=str(e)[:200], bank_id=bank_id)
 
 
 if __name__ == "__main__":
