@@ -1,6 +1,6 @@
 ---
 title: "Giving Cursor a Long-Term Memory"
-description: Cursor resets its memory every session. Learn how to add persistent cross-session memory using the Hindsight plugin for Cursor. Zero dependencies, automatic recall and retain.
+description: Cursor resets its memory every session. Learn how to add persistent cross-session memory using the Hindsight plugin for Cursor — automatic session recall, conversation retention, and on-demand MCP tools.
 authors: [DK09876]
 date: 2026-04-03T12:00
 tags: [cursor, integrations, memory, plugin, coding-agents]
@@ -14,17 +14,17 @@ Cursor 3 introduced a plugin system with hooks, skills, and rules. It's a powerf
 
 If you've spent three turns explaining your project's architecture, your team's naming conventions, or that you prefer functional patterns over classes, Cursor forgets all of it the moment the session ends.
 
-The Hindsight plugin for Cursor fixes this. It hooks into the `beforeSubmitPrompt` event to recall relevant memories before every prompt, and the `stop` event to retain conversation transcripts after every task. No manual effort, no copy-pasting context, no dependencies to install.
+The Hindsight plugin for Cursor fixes this. It uses the `sessionStart` hook to recall relevant project memories at the beginning of each session, and the `stop` hook to retain conversation transcripts after every task. It also configures Cursor's MCP support for on-demand memory tools mid-session. No manual effort, no copy-pasting context.
 
 <!-- truncate -->
 
 ## TL;DR
 
 - Cursor 3 plugins can add hooks, skills, and rules, but they still do not give Cursor durable cross-session memory on their own
-- The Hindsight Cursor plugin adds automatic recall before each prompt and automatic retain after each task
-- You can run it against Hindsight Cloud, a self-hosted Hindsight API, or Cursor's native MCP support if you prefer explicit tools
+- The Hindsight Cursor plugin adds automatic session recall at the start of each session and automatic retention after each task
+- For mid-session memory operations, the plugin configures Cursor's MCP support with explicit `recall`, `retain`, and `reflect` tools
+- You can run it against Hindsight Cloud, a self-hosted Hindsight API, or a local `hindsight-embed` daemon
 - Memory can stay global, per project, per session, or per user depending on how you configure bank IDs
-- The plugin is pure Python stdlib, so there is nothing to install inside your project beyond the plugin files
 
 ## The Problem: Session-Scoped Memory
 
@@ -38,20 +38,20 @@ These aren't edge cases. They're the default experience for anyone who uses Curs
 
 ## How the Plugin Works
 
-The Hindsight plugin uses two of Cursor's hook events to create a transparent memory loop:
+The Hindsight plugin uses two complementary mechanisms to create a persistent memory loop:
 
-### Auto-Recall (beforeSubmitPrompt)
+### Session Recall (sessionStart hook)
 
-Every time you send a prompt, the plugin fires before Cursor processes it:
+When you open a new session, the `sessionStart` hook fires:
 
-1. Composes a query from your prompt (optionally including prior turns for context)
+1. Builds a broad project-level query from your workspace context (project name, workspace roots)
 2. Calls Hindsight's recall API with multi-strategy retrieval (semantic search, BM25, graph traversal, temporal filtering)
 3. Formats the results into a `<hindsight_memories>` block
-4. Injects it as `additionalContext` — the agent sees it, you don't
+4. Injects it as `additionalContext` — the agent sees it for the entire session, you don't
 
-The memories appear in the agent's context window but not in your chat transcript. Cursor uses them to inform its response without cluttering your conversation.
+The memories appear in the agent's context window but not in your chat transcript. Cursor uses them to inform every response in the session without cluttering your conversation.
 
-### Auto-Retain (stop)
+### Auto-Retain (stop hook)
 
 After Cursor completes a task, the plugin fires again:
 
@@ -62,44 +62,53 @@ After Cursor completes a task, the plugin fires again:
 
 Hindsight extracts structured facts — preferences, decisions, project details — and builds a knowledge graph over time. The next session, those facts are available for recall.
 
-### On-Demand Recall
+### On-Demand MCP Tools
 
-The plugin also registers a `hindsight-recall` skill. If you want to explicitly search your memory mid-conversation, use `/hindsight-recall` with a query. This is useful when auto-recall didn't surface what you need, or when you want to search for something specific.
+The `init` command also configures Cursor's native MCP support (`.cursor/mcp.json`) to connect to Hindsight's MCP endpoint. This gives the agent explicit `recall`, `retain`, and `reflect` tools for mid-session use:
 
-## Setup in 60 Seconds
+- **recall** — search for specific memories beyond what session recall provided
+- **retain** — explicitly store important decisions or context
+- **reflect** — reason over accumulated memories for architectural decisions
 
-**Step 1:** Install the plugin into your project:
+This two-layer approach — ambient session memory plus on-demand MCP tools — covers both "memory should just be there" and "I need to look something specific up."
+
+## Setup
+
+**Step 1:** Install the plugin:
 
 ```bash
-mkdir -p /path/to/your-project/.cursor-plugin
-cp -r hindsight-integrations/cursor /path/to/your-project/.cursor-plugin/hindsight-memory
+pip install hindsight-cursor
+cd /path/to/your-project
 ```
 
-**Step 2:** Set an LLM provider (for the local Hindsight daemon):
+**Step 2a:** Connect to Hindsight Cloud (fastest — no local server needed):
 
 ```bash
-export OPENAI_API_KEY="sk-your-key"
-# or
-export ANTHROPIC_API_KEY="your-key"
-```
-
-Or connect to Hindsight Cloud (no local LLM needed):
-
-```bash
-mkdir -p ~/.hindsight
-cat > ~/.hindsight/cursor.json << 'EOF'
-{
-  "hindsightApiUrl": "https://api.hindsight.vectorize.io",
-  "hindsightApiToken": "YOUR_HINDSIGHT_API_TOKEN"
-}
-EOF
+hindsight-cursor init --api-url https://api.hindsight.vectorize.io --api-token YOUR_HINDSIGHT_API_TOKEN
 ```
 
 Sign up at [Hindsight Cloud](https://ui.hindsight.vectorize.io/signup) to get a token.
 
+**Step 2b:** Or connect to a local Hindsight server:
+
+```bash
+hindsight-cursor init --api-url http://localhost:8888
+```
+
+If you don't have Hindsight running locally, start it with Docker:
+
+```bash
+export OPENAI_API_KEY=your-key
+docker run --rm -it --pull always -p 8888:8888 \
+  -e HINDSIGHT_API_LLM_API_KEY=$OPENAI_API_KEY \
+  -e HINDSIGHT_API_LLM_MODEL=gpt-4o-mini \
+  -v $HOME/.hindsight-docker:/home/hindsight/.pg0 \
+  ghcr.io/vectorize-io/hindsight:latest
+```
+
 **Step 3:** If Cursor is already open, **fully quit and reopen it** — plugins load at startup. The plugin activates automatically.
 
-No pip install, no npm install, no build step. The plugin is pure Python stdlib.
+The `init` command handles everything: plugin files, connection config, and MCP setup.
 
 ## Per-Project Memory Isolation
 
@@ -116,9 +125,9 @@ This derives the bank ID from the working directory. Your React project and your
 
 Available granularity fields: `agent`, `project`, `session`, `channel`, `user`. Combine them to match your workflow.
 
-## Alternative: MCP Integration
+## Alternative: MCP-Only
 
-If you'd rather use Cursor's native MCP support instead of the plugin system, Hindsight works there too. Add to `.cursor/mcp.json`:
+If you'd rather skip the plugin hooks entirely and use only Cursor's native MCP support, you can configure `.cursor/mcp.json` manually:
 
 ```json
 {
@@ -130,7 +139,7 @@ If you'd rather use Cursor's native MCP support instead of the plugin system, Hi
 }
 ```
 
-This gives you explicit `retain`, `recall`, and `reflect` tools. The plugin approach is more automatic (hooks fire without you asking); the MCP approach gives you more control.
+This gives you explicit `retain`, `recall`, and `reflect` tools without any automatic behavior. The plugin approach is more automatic (hooks fire without you asking); the MCP-only approach gives you full control.
 
 ## Cookbook Demo
 

@@ -22,7 +22,7 @@ def fake_plugin_data(tmp_path):
     (data_dir / "settings.json").write_text('{"bankId": "cursor"}')
     (data_dir / "scripts" / "lib").mkdir(parents=True)
     (data_dir / "scripts" / "lib" / "__init__.py").write_text("")
-    (data_dir / "scripts" / "recall.py").write_text("# recall")
+    (data_dir / "scripts" / "session_start.py").write_text("# session_start")
     (data_dir / "scripts" / "retain.py").write_text("# retain")
     (data_dir / "rules").mkdir()
     (data_dir / "rules" / "hindsight-memory.mdc").write_text("# rule")
@@ -45,14 +45,14 @@ class TestInit:
         project.mkdir()
 
         with patch("hindsight_cursor.cli._plugin_data_dir", return_value=fake_plugin_data):
-            cmd_init(_Args(project=str(project), force=False, api_url=None, api_token=None, bank_id="cursor"))
+            cmd_init(_Args(project=str(project), force=False, api_url=None, api_token=None, bank_id="cursor", no_mcp=False))
 
         dest = project / ".cursor-plugin" / "hindsight-memory"
         assert dest.exists()
         assert (dest / ".cursor-plugin" / "plugin.json").exists()
         assert (dest / "hooks" / "hooks.json").exists()
         assert (dest / "settings.json").exists()
-        assert (dest / "scripts" / "recall.py").exists()
+        assert (dest / "scripts" / "session_start.py").exists()
         assert (dest / "rules" / "hindsight-memory.mdc").exists()
 
     def test_refuses_overwrite_without_force(self, tmp_path, fake_plugin_data, capsys):
@@ -61,7 +61,7 @@ class TestInit:
         dest.mkdir(parents=True)
 
         with patch("hindsight_cursor.cli._plugin_data_dir", return_value=fake_plugin_data):
-            cmd_init(_Args(project=str(project), force=False, api_url=None, api_token=None, bank_id="cursor"))
+            cmd_init(_Args(project=str(project), force=False, api_url=None, api_token=None, bank_id="cursor", no_mcp=False))
 
         out = capsys.readouterr().out
         assert "already installed" in out
@@ -74,7 +74,7 @@ class TestInit:
         (dest / "old-file.txt").write_text("old")
 
         with patch("hindsight_cursor.cli._plugin_data_dir", return_value=fake_plugin_data):
-            cmd_init(_Args(project=str(project), force=True, api_url=None, api_token=None, bank_id="cursor"))
+            cmd_init(_Args(project=str(project), force=True, api_url=None, api_token=None, bank_id="cursor", no_mcp=False))
 
         assert (dest / "hooks" / "hooks.json").exists()
 
@@ -96,6 +96,7 @@ class TestInit:
                     api_url="https://api.hindsight.vectorize.io",
                     api_token="tok_123",
                     bank_id="my-bank",
+                    no_mcp=False,
                 )
             )
 
@@ -118,7 +119,7 @@ class TestInit:
             patch("hindsight_cursor.cli._USER_CONFIG_DIR", config_dir),
             patch("hindsight_cursor.cli._USER_CONFIG_FILE", config_file),
         ):
-            cmd_init(_Args(project=str(project), force=False, api_url="http://x", api_token=None, bank_id="cursor"))
+            cmd_init(_Args(project=str(project), force=False, api_url="http://x", api_token=None, bank_id="cursor", no_mcp=False))
 
         # Original config should be untouched
         cfg = json.loads(config_file.read_text())
@@ -129,9 +130,86 @@ class TestInit:
         monkeypatch.chdir(tmp_path)
 
         with patch("hindsight_cursor.cli._plugin_data_dir", return_value=fake_plugin_data):
-            cmd_init(_Args(project=".", force=False, api_url=None, api_token=None, bank_id="cursor"))
+            cmd_init(_Args(project=".", force=False, api_url=None, api_token=None, bank_id="cursor", no_mcp=False))
 
         assert (tmp_path / ".cursor-plugin" / "hindsight-memory" / "settings.json").exists()
+
+    def test_creates_mcp_config(self, tmp_path, fake_plugin_data):
+        project = tmp_path / "my-project"
+        project.mkdir()
+
+        with patch("hindsight_cursor.cli._plugin_data_dir", return_value=fake_plugin_data):
+            cmd_init(
+                _Args(
+                    project=str(project),
+                    force=False,
+                    api_url="https://api.hindsight.vectorize.io",
+                    api_token="tok_123",
+                    bank_id="my-bank",
+                    no_mcp=False,
+                )
+            )
+
+        mcp_file = project / ".cursor" / "mcp.json"
+        assert mcp_file.exists()
+        mcp = json.loads(mcp_file.read_text())
+        assert "hindsight" in mcp["mcpServers"]
+        assert mcp["mcpServers"]["hindsight"]["url"] == "https://api.hindsight.vectorize.io/mcp/my-bank/"
+        assert mcp["mcpServers"]["hindsight"]["headers"]["Authorization"] == "Bearer tok_123"
+
+    def test_skips_mcp_without_api_url(self, tmp_path, fake_plugin_data):
+        project = tmp_path / "my-project"
+        project.mkdir()
+
+        with patch("hindsight_cursor.cli._plugin_data_dir", return_value=fake_plugin_data):
+            cmd_init(_Args(project=str(project), force=False, api_url=None, api_token=None, bank_id="cursor", no_mcp=False))
+
+        mcp_file = project / ".cursor" / "mcp.json"
+        assert not mcp_file.exists()
+
+    def test_no_mcp_flag(self, tmp_path, fake_plugin_data):
+        project = tmp_path / "my-project"
+        project.mkdir()
+
+        with patch("hindsight_cursor.cli._plugin_data_dir", return_value=fake_plugin_data):
+            cmd_init(
+                _Args(
+                    project=str(project),
+                    force=False,
+                    api_url="https://api.hindsight.vectorize.io",
+                    api_token=None,
+                    bank_id="cursor",
+                    no_mcp=True,
+                )
+            )
+
+        mcp_file = project / ".cursor" / "mcp.json"
+        assert not mcp_file.exists()
+
+    def test_merges_with_existing_mcp_config(self, tmp_path, fake_plugin_data):
+        project = tmp_path / "my-project"
+        project.mkdir()
+        mcp_dir = project / ".cursor"
+        mcp_dir.mkdir()
+        (mcp_dir / "mcp.json").write_text(json.dumps({
+            "mcpServers": {"other-server": {"url": "http://other"}}
+        }))
+
+        with patch("hindsight_cursor.cli._plugin_data_dir", return_value=fake_plugin_data):
+            cmd_init(
+                _Args(
+                    project=str(project),
+                    force=False,
+                    api_url="http://localhost:8888",
+                    api_token=None,
+                    bank_id="cursor",
+                    no_mcp=False,
+                )
+            )
+
+        mcp = json.loads((mcp_dir / "mcp.json").read_text())
+        assert "other-server" in mcp["mcpServers"]
+        assert "hindsight" in mcp["mcpServers"]
 
 
 class TestUninstall:
@@ -152,3 +230,24 @@ class TestUninstall:
         cmd_uninstall(_Args(project=str(project)))
 
         assert "not found" in capsys.readouterr().out
+
+    def test_cleans_up_mcp_config(self, tmp_path):
+        project = tmp_path / "my-project"
+        dest = project / ".cursor-plugin" / "hindsight-memory"
+        dest.mkdir(parents=True)
+        (dest / "x.txt").write_text("x")
+
+        mcp_dir = project / ".cursor"
+        mcp_dir.mkdir()
+        (mcp_dir / "mcp.json").write_text(json.dumps({
+            "mcpServers": {
+                "hindsight": {"url": "http://localhost:8888/mcp/cursor/"},
+                "other": {"url": "http://other"},
+            }
+        }))
+
+        cmd_uninstall(_Args(project=str(project)))
+
+        mcp = json.loads((mcp_dir / "mcp.json").read_text())
+        assert "hindsight" not in mcp["mcpServers"]
+        assert "other" in mcp["mcpServers"]

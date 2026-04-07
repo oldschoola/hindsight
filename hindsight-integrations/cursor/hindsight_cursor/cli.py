@@ -21,7 +21,7 @@ _PLUGIN_FILES = [
     "scripts/lib/daemon.py",
     "scripts/lib/llm.py",
     "scripts/lib/state.py",
-    "scripts/recall.py",
+    "scripts/session_start.py",
     "scripts/retain.py",
     "settings.json",
     "skills/hindsight-recall/SKILL.md",
@@ -66,6 +66,43 @@ def _scaffold_config(api_url: str | None, api_token: str | None, bank_id: str) -
     print(f"  Created {_USER_CONFIG_FILE}")
 
 
+def _setup_mcp(project: Path, api_url: str | None, api_token: str | None, bank_id: str) -> None:
+    """Write .cursor/mcp.json to connect Cursor to Hindsight's MCP endpoint.
+
+    Uses the single-bank MCP endpoint so that recall/retain/reflect tools
+    are scoped to the configured bank without requiring a bank_id parameter.
+    """
+    if not api_url:
+        return
+
+    mcp_dir = project / ".cursor"
+    mcp_file = mcp_dir / "mcp.json"
+
+    # Build the MCP server URL — single-bank endpoint
+    mcp_url = f"{api_url.rstrip('/')}/mcp/{bank_id}/"
+
+    # Build the server config
+    server_config: dict = {"url": mcp_url}
+    if api_token:
+        server_config["headers"] = {"Authorization": f"Bearer {api_token}"}
+
+    # Merge with existing mcp.json if present
+    existing: dict = {}
+    if mcp_file.exists():
+        try:
+            existing = json.loads(mcp_file.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    servers = existing.get("mcpServers", {})
+    servers["hindsight"] = server_config
+    existing["mcpServers"] = servers
+
+    mcp_dir.mkdir(parents=True, exist_ok=True)
+    mcp_file.write_text(json.dumps(existing, indent=2) + "\n")
+    print(f"  MCP config written to {mcp_file}")
+
+
 def cmd_init(args: argparse.Namespace) -> None:
     """Install the Hindsight plugin into a Cursor project."""
     project = Path(args.project).resolve()
@@ -85,6 +122,10 @@ def cmd_init(args: argparse.Namespace) -> None:
 
     _scaffold_config(args.api_url, args.api_token, args.bank_id)
 
+    # Set up MCP for on-demand recall/retain/reflect tools
+    if not args.no_mcp:
+        _setup_mcp(project, args.api_url, args.api_token, args.bank_id)
+
     print()
     print("Done! Fully quit and reopen Cursor to activate the plugin.")
 
@@ -98,6 +139,24 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
         return
     shutil.rmtree(dest)
     print(f"Removed {dest}")
+
+    # Clean up MCP config
+    mcp_file = project / ".cursor" / "mcp.json"
+    if mcp_file.exists():
+        try:
+            mcp_config = json.loads(mcp_file.read_text())
+            servers = mcp_config.get("mcpServers", {})
+            if "hindsight" in servers:
+                del servers["hindsight"]
+                if servers:
+                    mcp_config["mcpServers"] = servers
+                    mcp_file.write_text(json.dumps(mcp_config, indent=2) + "\n")
+                    print(f"  Removed hindsight from {mcp_file}")
+                else:
+                    mcp_file.unlink()
+                    print(f"  Removed {mcp_file}")
+        except (json.JSONDecodeError, OSError):
+            pass
 
 
 def main() -> None:
@@ -119,6 +178,7 @@ def main() -> None:
     init_p.add_argument("--api-url", default=None, help="Hindsight API URL (e.g. https://api.hindsight.vectorize.io)")
     init_p.add_argument("--api-token", default=None, help="Hindsight API token")
     init_p.add_argument("--bank-id", default="cursor", help="Memory bank ID (default: cursor)")
+    init_p.add_argument("--no-mcp", action="store_true", help="Skip MCP integration setup")
     init_p.set_defaults(func=cmd_init)
 
     # -- uninstall --

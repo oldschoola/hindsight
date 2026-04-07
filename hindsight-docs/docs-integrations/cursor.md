@@ -1,85 +1,77 @@
 ---
 sidebar_position: 6
 title: "Cursor Persistent Memory with Hindsight | Integration"
-description: "Add long-term memory to Cursor with Hindsight. Automatically captures conversations and recalls relevant context across sessions using Cursor's plugin architecture."
+description: "Add long-term memory to Cursor with Hindsight. Automatically recalls relevant context at session start and retains conversations after each task using Cursor's plugin architecture."
 ---
 
 # Cursor
 
-Biomimetic long-term memory for [Cursor](https://cursor.com) using [Hindsight](https://vectorize.io/hindsight). Automatically captures conversations and intelligently recalls relevant context — adapted to Cursor's hook-based plugin architecture.
+Biomimetic long-term memory for [Cursor](https://cursor.com) using [Hindsight](https://vectorize.io/hindsight). Automatically recalls relevant project context at session start and retains conversation transcripts after each task — adapted to Cursor's hook-based plugin architecture with MCP for on-demand tools.
 
 [View Changelog →](/changelog/integrations/cursor)
 
-## Plugin Mode vs MCP Mode
+## How It Works
 
-Hindsight works with Cursor in two ways. Choose one to start with.
+The Hindsight plugin uses two complementary mechanisms:
 
-| | Plugin Mode | MCP Mode |
-|--|-------------|----------|
-| **Install** | Copy files to `.cursor-plugin/hindsight-memory` | Add entry to `.cursor/mcp.json` |
-| **How it works** | Hooks fire automatically on every prompt and task completion | Agent calls Hindsight tools explicitly |
-| **Recall** | Silent — memories injected via `additionalContext` | Visible — agent runs `recall` tool |
-| **Retain** | Automatic on task stop | Agent decides when to call `retain` |
-| **Reflect** | Not available (use MCP for reflect) | Available as a tool |
-| **Best for** | Ambient memory with no user intervention | Explicit control over when memory is used |
+| | Plugin Hooks (automatic) | MCP Tools (on-demand) |
+|--|--------------------------|----------------------|
+| **Install** | `pip install hindsight-cursor && hindsight-cursor init` | Configured automatically by `init` |
+| **Recall** | Session start — memories injected via `additionalContext` | Agent calls `recall` tool mid-session |
+| **Retain** | Automatic on task stop | Agent calls `retain` tool explicitly |
+| **Reflect** | Not available via hooks | Available as a tool |
+| **Best for** | Ambient project memory with no user intervention | Targeted lookups and explicit memory operations |
 
-**Do I need both?** Usually no. Start with one mode. If you enable both, MCP tool calls can make it harder to tell whether plugin hooks are working.
+Both are set up by a single `hindsight-cursor init` command. Use `--no-mcp` to skip the MCP integration if you only want hooks.
 
 ## Quick Start
 
 ```bash
-# 1. Copy the plugin into your project
-mkdir -p /path/to/your-project/.cursor-plugin
-cp -r hindsight-integrations/cursor /path/to/your-project/.cursor-plugin/hindsight-memory
+# 1. Install the plugin
+pip install hindsight-cursor
+cd /path/to/your-project
 
-# 2. Configure your LLM provider for memory extraction
-# Option A: OpenAI (auto-detected)
-export OPENAI_API_KEY="sk-your-key"
+# 2a. Connect to Hindsight Cloud (fastest — no local server needed)
+hindsight-cursor init --api-url https://api.hindsight.vectorize.io --api-token YOUR_HINDSIGHT_API_TOKEN
 
-# Option B: Anthropic (auto-detected)
-export ANTHROPIC_API_KEY="your-key"
+# 2b. Or connect to a local Hindsight server
+hindsight-cursor init --api-url http://localhost:8888
 
-# Option C: Connect to Hindsight Cloud (no local LLM needed)
-mkdir -p ~/.hindsight
-cat > ~/.hindsight/cursor.json << 'EOF'
-{
-  "hindsightApiUrl": "https://api.hindsight.vectorize.io",
-  "hindsightApiToken": "YOUR_HINDSIGHT_API_TOKEN"
-}
-EOF
-
-# Option D: Connect to a self-hosted Hindsight server
-# echo '{"hindsightApiUrl": "https://your-server.com"}' > ~/.hindsight/cursor.json
-
-# 3. Open Cursor — the plugin activates automatically
-# If Cursor is already open, fully quit and reopen it.
+# 3. Fully quit and reopen Cursor — plugins load at startup
 ```
 
-That's it! The plugin will automatically start capturing and recalling memories.
+Sign up at [Hindsight Cloud](https://ui.hindsight.vectorize.io/signup) to get a token, or start Hindsight locally with Docker:
+
+```bash
+export OPENAI_API_KEY=your-key
+docker run --rm -it --pull always -p 8888:8888 \
+  -e HINDSIGHT_API_LLM_API_KEY=$OPENAI_API_KEY \
+  -e HINDSIGHT_API_LLM_MODEL=gpt-4o-mini \
+  -v $HOME/.hindsight-docker:/home/hindsight/.pg0 \
+  ghcr.io/vectorize-io/hindsight:latest
+```
+
+### What `init` does
+
+- Copies plugin files into `.cursor-plugin/hindsight-memory/`
+- Creates `~/.hindsight/cursor.json` with your connection settings (if the file does not already exist)
+- Writes `.cursor/mcp.json` with the Hindsight MCP endpoint for on-demand tools
+- Use `--force` to overwrite an existing installation
+- Use `--no-mcp` to skip the MCP configuration
 
 :::caution
 If you add the plugin to an already-open workspace, **fully quit Cursor and reopen it**. Plugins are loaded at startup — a simple window reload is not enough.
 :::
 
-:::tip Alternative: MCP Integration
-Cursor also supports MCP servers natively. If you prefer MCP over the plugin system, see [Local MCP Server](./local-mcp) and add Hindsight to `.cursor/mcp.json`:
-```json
-{
-  "mcpServers": {
-    "hindsight": { "url": "http://localhost:8888/mcp/" }
-  }
-}
-```
-:::
-
 ## Features
 
-- **Auto-recall** — on every user prompt, queries Hindsight for relevant memories and injects them as context via `additionalContext` (invisible to the chat, visible to the agent)
+- **Session recall** — at the start of each session, queries Hindsight for relevant project memories and injects them as context via `additionalContext` (invisible to the chat, visible to the agent)
 - **Auto-retain** — after every task completion, extracts and retains conversation content to Hindsight for long-term storage
-- **On-demand recall** — use the `hindsight-recall` skill to manually query memories mid-conversation
+- **On-demand MCP tools** — `recall`, `retain`, and `reflect` tools for explicit mid-session memory operations
+- **On-demand recall skill** — use the `hindsight-recall` skill for manual memory lookups
 - **Daemon management** — can auto-start/stop `hindsight-embed` locally or connect to an external Hindsight server
 - **Dynamic bank IDs** — supports per-agent, per-project, or per-session memory isolation
-- **Zero dependencies** — pure Python stdlib, no pip install required
+- **Zero runtime dependencies** — plugin scripts use pure Python stdlib only
 
 ## Architecture
 
@@ -87,12 +79,16 @@ The plugin uses Cursor's hook system:
 
 | Hook | Event | Purpose |
 |------|-------|---------|
-| `recall.py` | `beforeSubmitPrompt` | **Auto-recall** — query memories, inject as `additionalContext` |
+| `session_start.py` | `sessionStart` | **Session recall** — query memories, inject as `additionalContext` |
 | `retain.py` | `stop` | **Auto-retain** — extract transcript, POST to Hindsight |
 
+The `sessionStart` hook fires once when a new Cursor session begins. It performs a broad project-level recall and injects relevant memories as hidden context.
+
+The `init` command also configures Cursor's MCP support (`.cursor/mcp.json`) to connect to Hindsight's MCP endpoint, giving the agent explicit `recall`, `retain`, and `reflect` tools for mid-session use.
+
 Additionally, the plugin provides:
-- **Skill** (`hindsight-recall`) — on-demand memory querying via `/hindsight-recall`
-- **Rule** (`hindsight-memory.mdc`) — always-on rule instructing the agent to leverage recalled memories proactively
+- **Skill** (`hindsight-recall`) — on-demand memory querying
+- **Rule** (`hindsight-memory.mdc`) — always-on rule instructing the agent to leverage recalled memories and MCP tools
 
 ## Connection Modes
 
@@ -143,7 +139,7 @@ All settings live in `~/.hindsight/cursor.json`. Every setting can also be overr
 | `hindsightApiUrl` | `HINDSIGHT_API_URL` | `""` (empty) | URL of an external Hindsight API server. When empty, the plugin uses a local daemon instead. |
 | `hindsightApiToken` | `HINDSIGHT_API_TOKEN` | `null` | Authentication token for the external API. Only needed when `hindsightApiUrl` is set. |
 | `apiPort` | `HINDSIGHT_API_PORT` | `9077` | Port used by the local `hindsight-embed` daemon. |
-| `daemonIdleTimeout` | `HINDSIGHT_DAEMON_IDLE_TIMEOUT` | `0` | Seconds of inactivity before the local daemon shuts itself down. `0` means the daemon stays running until the session ends. |
+| `daemonIdleTimeout` | `HINDSIGHT_DAEMON_IDLE_TIMEOUT` | `300` | Seconds of inactivity before the local daemon shuts itself down. `0` means never. |
 | `embedVersion` | `HINDSIGHT_EMBED_VERSION` | `"latest"` | Which version of `hindsight-embed` to install via `uvx`. |
 | `embedPackagePath` | `HINDSIGHT_EMBED_PACKAGE_PATH` | `null` | Local path to a `hindsight-embed` checkout for development. |
 
@@ -176,17 +172,16 @@ A **bank** is an isolated memory store — like a separate "brain."
 
 ---
 
-### Auto-Recall
+### Session Recall
 
-Auto-recall runs on every user prompt. It queries Hindsight for relevant memories and injects them into the agent's context as invisible `additionalContext`.
+Session recall runs once at the start of each session. It queries Hindsight for relevant project memories and injects them into the agent's context as invisible `additionalContext`.
 
 | Setting | Env Var | Default | Description |
 |---------|---------|---------|-------------|
-| `autoRecall` | `HINDSIGHT_AUTO_RECALL` | `true` | Master switch for auto-recall. |
+| `autoRecall` | `HINDSIGHT_AUTO_RECALL` | `true` | Master switch for session recall. |
 | `recallBudget` | `HINDSIGHT_RECALL_BUDGET` | `"mid"` | Search thoroughness: `"low"`, `"mid"`, `"high"`. |
 | `recallMaxTokens` | `HINDSIGHT_RECALL_MAX_TOKENS` | `1024` | Max tokens in the recalled memory block. |
 | `recallTypes` | — | `["world", "experience"]` | Memory types to retrieve. |
-| `recallContextTurns` | `HINDSIGHT_RECALL_CONTEXT_TURNS` | `1` | Prior turns to include in the recall query. |
 | `recallMaxQueryChars` | `HINDSIGHT_RECALL_MAX_QUERY_CHARS` | `800` | Max character length of the query. |
 
 ---
@@ -227,6 +222,7 @@ Each file contains:
 - `status` — one of `success`, `empty`, `skipped`, or `error`
 - `bank_id` — which bank was used (present on `success` and `empty`)
 - `mode` — always `plugin`
+- `hook` — `sessionStart` for recall
 - `result_count` (recall) or `message_count` (retain) — present on `success`
 
 If `saved_at` updates when you use Cursor, the hooks are firing. Check `status` to understand what happened.
@@ -235,10 +231,10 @@ If `saved_at` updates when you use Cursor, the hooks are firing. Check `status` 
 
 **Plugin not activating**: Check that `.cursor-plugin/plugin.json` exists in the plugin directory. Enable `"debug": true` in `~/.hindsight/cursor.json` and check stderr output.
 
-**Seeing "Ran Recall in hindsight" in the Agent Window?** That is MCP, not the plugin. Plugin-based recall is silent — it injects context via `additionalContext` without a visible tool call. If you see explicit Hindsight tool calls, you have MCP configured in `.cursor/mcp.json`.
+**Seeing "Ran Recall in hindsight" in the Agent Window?** That is MCP, not the plugin. Plugin-based recall is silent — it injects context via `additionalContext` without a visible tool call. If you see explicit Hindsight tool calls, you have MCP configured in `.cursor/mcp.json`. Both can work together.
 
 **Recall returning no memories**: Verify the Hindsight server is reachable (`curl http://localhost:9077/health`). Memories need at least one retain cycle.
 
 **Daemon not starting**: Ensure an LLM API key is set. Review daemon logs at `~/.hindsight/profiles/cursor.log`.
 
-**High latency on recall**: The recall hook has a 12-second timeout. Use `recallBudget: "low"` or reduce `recallMaxTokens`.
+**High latency on session start**: The session recall hook has a 15-second timeout. Use `recallBudget: "low"` or reduce `recallMaxTokens`.

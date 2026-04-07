@@ -1,4 +1,4 @@
-"""Tests for Cursor plugin hook scripts (recall and retain)."""
+"""Tests for Cursor plugin hook scripts (session_start and retain)."""
 
 import importlib
 import io
@@ -14,30 +14,18 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
 
-class TestRecallHook:
+class TestSessionStartHook:
     def test_skips_when_auto_recall_disabled(self, monkeypatch, capsys):
         monkeypatch.setenv("CURSOR_PLUGIN_ROOT", "/nonexistent")
         monkeypatch.setenv("HINDSIGHT_AUTO_RECALL", "false")
-        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"prompt": "test"})))
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"workspace_roots": ["/tmp/test"]})))
 
-        import recall
-        importlib.reload(recall)
-        recall.main()
+        import session_start
+        importlib.reload(session_start)
+        session_start.main()
 
         output = capsys.readouterr()
         assert output.out == ""  # No JSON output means no context injected
-
-    def test_skips_short_prompt(self, monkeypatch, capsys):
-        monkeypatch.setenv("CURSOR_PLUGIN_ROOT", "/nonexistent")
-        monkeypatch.setenv("HINDSIGHT_API_URL", "http://localhost:8888")
-        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"prompt": "hi"})))
-
-        import recall
-        importlib.reload(recall)
-        recall.main()
-
-        output = capsys.readouterr()
-        assert output.out == ""
 
     def test_outputs_context_on_results(self, monkeypatch, capsys):
         monkeypatch.setenv("CURSOR_PLUGIN_ROOT", "/nonexistent")
@@ -47,23 +35,23 @@ class TestRecallHook:
             "results": [{"text": "User prefers TypeScript", "type": "world", "mentioned_at": "2026-01-01"}]
         }
 
-        hook_input = {"prompt": "What language should I use?", "cwd": "/tmp/test"}
+        hook_input = {"workspace_roots": ["/tmp/test-project"], "cwd": "/tmp/test-project"}
         monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(hook_input)))
 
-        import recall
-        importlib.reload(recall)
+        import session_start
+        importlib.reload(session_start)
 
-        with patch.object(recall, "get_api_url", return_value="http://localhost:8888"), \
-             patch.object(recall, "HindsightClient", return_value=mock_client), \
-             patch.object(recall, "ensure_bank_mission"), \
-             patch.object(recall, "write_state"):
-            recall.main()
+        with patch.object(session_start, "get_api_url", return_value="http://localhost:8888"), \
+             patch.object(session_start, "HindsightClient", return_value=mock_client), \
+             patch.object(session_start, "ensure_bank_mission"), \
+             patch.object(session_start, "write_state"):
+            session_start.main()
 
         output = capsys.readouterr()
         result = json.loads(output.out)
-        assert "additionalContext" in result["hookSpecificOutput"]
-        assert "User prefers TypeScript" in result["hookSpecificOutput"]["additionalContext"]
-        assert "hindsight_memories" in result["hookSpecificOutput"]["additionalContext"]
+        assert "additionalContext" in result
+        assert "User prefers TypeScript" in result["additionalContext"]
+        assert "hindsight_memories" in result["additionalContext"]
 
     def test_no_output_on_empty_results(self, monkeypatch, capsys):
         monkeypatch.setenv("CURSOR_PLUGIN_ROOT", "/nonexistent")
@@ -71,19 +59,67 @@ class TestRecallHook:
         mock_client = MagicMock()
         mock_client.recall.return_value = {"results": []}
 
-        hook_input = {"prompt": "Tell me about quantum physics"}
+        hook_input = {"workspace_roots": ["/tmp/test-project"]}
         monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(hook_input)))
 
-        import recall
-        importlib.reload(recall)
+        import session_start
+        importlib.reload(session_start)
 
-        with patch.object(recall, "get_api_url", return_value="http://localhost:8888"), \
-             patch.object(recall, "HindsightClient", return_value=mock_client), \
-             patch.object(recall, "ensure_bank_mission"):
-            recall.main()
+        with patch.object(session_start, "get_api_url", return_value="http://localhost:8888"), \
+             patch.object(session_start, "HindsightClient", return_value=mock_client), \
+             patch.object(session_start, "ensure_bank_mission"):
+            session_start.main()
 
         output = capsys.readouterr()
         assert output.out == ""
+
+    def test_builds_query_from_workspace_roots(self, monkeypatch, capsys):
+        monkeypatch.setenv("CURSOR_PLUGIN_ROOT", "/nonexistent")
+
+        mock_client = MagicMock()
+        mock_client.recall.return_value = {
+            "results": [{"text": "Uses FastAPI", "type": "world"}]
+        }
+
+        hook_input = {"workspace_roots": ["/home/user/projects/my-app"]}
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(hook_input)))
+
+        import session_start
+        importlib.reload(session_start)
+
+        with patch.object(session_start, "get_api_url", return_value="http://localhost:8888"), \
+             patch.object(session_start, "HindsightClient", return_value=mock_client), \
+             patch.object(session_start, "ensure_bank_mission"), \
+             patch.object(session_start, "write_state"):
+            session_start.main()
+
+        # Verify the query included the project name
+        call_kwargs = mock_client.recall.call_args[1]
+        assert "my-app" in call_kwargs["query"]
+
+    def test_allows_daemon_start(self, monkeypatch, capsys):
+        """sessionStart should allow daemon start since it runs at session beginning."""
+        monkeypatch.setenv("CURSOR_PLUGIN_ROOT", "/nonexistent")
+
+        mock_client = MagicMock()
+        mock_client.recall.return_value = {"results": []}
+
+        hook_input = {"workspace_roots": ["/tmp/test"]}
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(hook_input)))
+
+        import session_start
+        importlib.reload(session_start)
+
+        mock_get_url = MagicMock(return_value="http://localhost:9077")
+        with patch.object(session_start, "get_api_url", mock_get_url), \
+             patch.object(session_start, "HindsightClient", return_value=mock_client), \
+             patch.object(session_start, "ensure_bank_mission"):
+            session_start.main()
+
+        # Verify allow_daemon_start=True was passed
+        mock_get_url.assert_called_once()
+        call_kwargs = mock_get_url.call_args[1]
+        assert call_kwargs["allow_daemon_start"] is True
 
 
 class TestRetainHook:
@@ -168,8 +204,10 @@ class TestManifest:
             hooks = json.load(f)
 
         assert hooks["version"] == 1
-        assert "beforeSubmitPrompt" in hooks["hooks"]
+        assert "sessionStart" in hooks["hooks"]
         assert "stop" in hooks["hooks"]
+        # beforeSubmitPrompt should NOT be present (it doesn't support additionalContext)
+        assert "beforeSubmitPrompt" not in hooks["hooks"]
 
     def test_settings_json_valid(self):
         settings_path = os.path.join(

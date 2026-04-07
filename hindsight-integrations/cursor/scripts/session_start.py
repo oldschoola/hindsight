@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
-"""Auto-recall hook for Cursor's beforeSubmitPrompt event.
+"""Session start hook for Cursor's sessionStart event.
+
+Injects relevant project memories at the beginning of each Cursor session
+via additionalContext. Unlike beforeSubmitPrompt (which cannot return
+additionalContext), sessionStart is the correct Cursor hook for ambient
+context injection.
 
 Flow:
-  1. Read hook input from stdin (prompt, conversation_id, cwd)
+  1. Read hook input from stdin (workspace_roots, conversation_id)
   2. Resolve API URL (external, existing local, or auto-start daemon)
   3. Derive bank ID (static or dynamic from project context)
   4. Ensure bank mission is set (first use only)
-  5. Compose multi-turn query if recallContextTurns > 1
-  6. Truncate to recallMaxQueryChars
-  7. Call Hindsight recall API
-  8. Format memories and output additionalContext
-  9. Save last recall to state
+  5. Compose a broad project-level query from workspace context
+  6. Call Hindsight recall API
+  7. Format memories and output additionalContext
+  8. Save last recall to state
 
 Exit codes:
   0 -- always (graceful degradation on any error)
@@ -26,43 +30,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lib.bank import derive_bank_id, ensure_bank_mission
 from lib.client import HindsightClient
 from lib.config import debug_log, load_config
-from lib.content import (
-    compose_recall_query,
-    format_current_time,
-    format_memories,
-    truncate_recall_query,
-)
+from lib.content import format_current_time, format_memories
 from lib.daemon import get_api_url
 from lib.state import write_state
 
 LAST_RECALL_STATE = "last_recall.json"
-
-
-def read_transcript_messages(transcript_path: str) -> list:
-    """Read messages from a JSONL transcript file for multi-turn context.
-
-    Cursor transcript format:
-      {role: "user", content: "..."}
-      {role: "assistant", content: "..."}
-    """
-    if not transcript_path or not os.path.isfile(transcript_path):
-        return []
-    messages = []
-    try:
-        with open(transcript_path) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                    if "role" in entry and "content" in entry:
-                        messages.append(entry)
-                except json.JSONDecodeError:
-                    continue
-    except OSError:
-        pass
-    return messages
 
 
 def _write_recall_status(status: str, **extra):
@@ -70,6 +42,7 @@ def _write_recall_status(status: str, **extra):
     data = {
         "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "mode": "plugin",
+        "hook": "sessionStart",
         "status": status,
     }
     data.update(extra)
@@ -77,6 +50,38 @@ def _write_recall_status(status: str, **extra):
         write_state(LAST_RECALL_STATE, data)
     except Exception:
         pass
+
+
+def _build_session_query(hook_input: dict, config: dict) -> str:
+    """Build a broad recall query from session context.
+
+    At session start we don't have a specific user prompt, so we build a
+    query from the workspace context: project name, workspace roots, and
+    any configured bank mission.
+    """
+    parts = []
+
+    # Use workspace roots to identify the project
+    workspace_roots = hook_input.get("workspace_roots", [])
+    if workspace_roots:
+        project_names = [os.path.basename(r) for r in workspace_roots if r]
+        if project_names:
+            parts.append(f"Project: {', '.join(project_names)}")
+
+    # Fall back to cwd
+    cwd = hook_input.get("cwd", "")
+    if not parts and cwd:
+        parts.append(f"Project: {os.path.basename(cwd)}")
+
+    # Include bank mission as context signal
+    mission = config.get("bankMission", "")
+    if mission:
+        parts.append(mission)
+
+    if not parts:
+        parts.append("What are the key context and preferences for this project?")
+
+    return "\n".join(parts)
 
 
 def main():
@@ -95,21 +100,14 @@ def main():
         _write_recall_status("error", reason="bad_stdin")
         return
 
-    debug_log(config, f"Hook input keys: {list(hook_input.keys())}")
+    debug_log(config, f"sessionStart hook input keys: {list(hook_input.keys())}")
 
-    # Extract user query from Cursor's hook input
-    prompt = (hook_input.get("prompt") or hook_input.get("user_prompt") or "").strip()
-    if not prompt or len(prompt) < 5:
-        debug_log(config, "Prompt too short for recall, skipping")
-        _write_recall_status("skipped", reason="short_prompt")
-        return
-
-    # Resolve API URL
+    # Resolve API URL — allow daemon start since this is session start
     def _dbg(*a):
         debug_log(config, *a)
 
     try:
-        api_url = get_api_url(config, debug_fn=_dbg, allow_daemon_start=False)
+        api_url = get_api_url(config, debug_fn=_dbg, allow_daemon_start=True)
     except RuntimeError as e:
         print(f"[Hindsight] {e}", file=sys.stderr)
         _write_recall_status("error", reason=f"api_url: {e}"[:200])
@@ -129,24 +127,13 @@ def main():
     # Set bank mission on first use
     ensure_bank_mission(client, bank_id, config, debug_fn=_dbg)
 
-    # Multi-turn query composition
-    recall_context_turns = config.get("recallContextTurns", 1)
+    # Build a broad project-level query
+    query = _build_session_query(hook_input, config)
     recall_max_query_chars = config.get("recallMaxQueryChars", 800)
-
-    if recall_context_turns > 1:
-        transcript_path = hook_input.get("transcript_path", "")
-        messages = read_transcript_messages(transcript_path)
-        debug_log(config, f"Multi-turn context: {recall_context_turns} turns, {len(messages)} messages")
-        query = compose_recall_query(prompt, messages, recall_context_turns)
-    else:
-        query = prompt
-
-    query = truncate_recall_query(query, prompt, recall_max_query_chars)
-
     if len(query) > recall_max_query_chars:
         query = query[:recall_max_query_chars]
 
-    debug_log(config, f"Recalling from bank '{bank_id}', query length: {len(query)}")
+    debug_log(config, f"Session recall from bank '{bank_id}', query length: {len(query)}")
 
     # Call Hindsight recall API
     try:
@@ -165,11 +152,11 @@ def main():
 
     results = response.get("results", [])
     if not results:
-        debug_log(config, "No memories found")
+        debug_log(config, "No memories found for session start")
         _write_recall_status("empty", bank_id=bank_id, query_length=len(query))
         return
 
-    debug_log(config, f"Injecting {len(results)} memories")
+    debug_log(config, f"Injecting {len(results)} memories at session start")
 
     # Format context message
     memories_formatted = format_memories(results)
@@ -187,12 +174,9 @@ def main():
     # Save last recall to state
     _write_recall_status("success", bank_id=bank_id, result_count=len(results), query_length=len(query))
 
-    # Output for Cursor hook system
+    # Output for Cursor sessionStart hook — additionalContext is supported here
     output = {
-        "hookSpecificOutput": {
-            "hookEventName": "beforeSubmitPrompt",
-            "additionalContext": context_message,
-        }
+        "additionalContext": context_message,
     }
     json.dump(output, sys.stdout)
 
@@ -201,7 +185,7 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        print(f"[Hindsight] Unexpected error in recall: {e}", file=sys.stderr)
+        print(f"[Hindsight] Unexpected error in session_start: {e}", file=sys.stderr)
         try:
             from lib.config import load_config
 

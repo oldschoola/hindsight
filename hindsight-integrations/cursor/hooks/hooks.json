@@ -1,10 +1,10 @@
 {
   "version": 1,
   "hooks": {
-    "beforeSubmitPrompt": [
+    "sessionStart": [
       {
-        "command": "python3 \"${CURSOR_PLUGIN_ROOT}/scripts/recall.py\"",
-        "timeout": 12
+        "command": "python3 \"${CURSOR_PLUGIN_ROOT}/scripts/session_start.py\"",
+        "timeout": 15
       }
     ],
     "stop": [
