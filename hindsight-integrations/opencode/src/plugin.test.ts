@@ -41,7 +41,7 @@ describe("HindsightPlugin", () => {
     process.env = { ...originalEnv };
   });
 
-  it("defaults to Hindsight Cloud when no API URL is configured", async () => {
+  it("defaults to the hosted backend URL when no API URL is configured", async () => {
     const result = await HindsightPlugin(mockPluginInput as any);
 
     expect(HindsightClient).toHaveBeenCalledWith({

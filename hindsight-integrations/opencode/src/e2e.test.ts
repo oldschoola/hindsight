@@ -11,7 +11,7 @@
  *
  * Requires:
  *   - A reachable Hindsight server (defaults to http://127.0.0.1:8888).
- *   - For Hindsight Cloud: HINDSIGHT_API_TOKEN with a valid key.
+ *   - When pointing at the hosted backend: HINDSIGHT_API_TOKEN with a valid key.
  */
 import { afterAll, beforeAll, describe, it, expect } from "vitest";
 import { randomBytes } from "node:crypto";
