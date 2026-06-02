@@ -3954,6 +3954,7 @@ jobs:
       - test-litellm-integration
       - test-pydantic-ai-integration
       - test-llamaindex-integration
+      - test-openai-agents-integration
       - test-agentcore-integration
       - test-pip-slim
       - test-embed
