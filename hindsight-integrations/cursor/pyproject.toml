@@ -62,8 +62,12 @@ packages = ["hindsight_cursor"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "requires_real_llm: tests that require a live Hindsight server (excluded from the deterministic PR-CI bucket; run via `pytest -m requires_real_llm`).",
+]
 
 [dependency-groups]
 dev = [
     "pytest>=9.0.2",
+    "hindsight-client>=0.4.19,<1.0",
 ]

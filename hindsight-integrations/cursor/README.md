@@ -67,12 +67,27 @@ The plugin uses two complementary mechanisms:
 
 | Hook | Event | Purpose |
 |------|-------|---------|
-| `session_start.py` | `sessionStart` | **Session recall** — query memories, inject as `additionalContext` |
+| `session_start.py` | `sessionStart` | **Session recall** — query memories, write `<workspace>/.cursor/rules/hindsight-session.mdc` so the agent gets memory in its system context, *and* emit `additionalContext` JSON (forward-compat). |
 | `retain.py` | `stop` | **Auto-retain** — extract transcript, POST to Hindsight |
 
-The `sessionStart` hook fires once when a new Cursor session begins. It performs a broad project-level recall and injects relevant memories as hidden context that the agent can reference throughout the session.
+The `sessionStart` hook fires when the agent processes the first prompt of each new chat. It performs a broad project-level recall and surfaces the result two ways — see ["How session memory reaches the agent"](#how-session-memory-reaches-the-agent) below for why both.
 
 The `stop` hook fires when the agent completes a task. It reads the conversation transcript and retains it to Hindsight for future recall.
+
+### How session memory reaches the agent
+
+Cursor's native injection channel for session-start hooks is the `additionalContext` JSON field — the hook returns memory text on stdout and Cursor places it in the agent's system prompt. **That channel has been broken in Cursor 3.x** (acknowledged by Cursor staff in [forum thread 158452](https://forum.cursor.com/t/sessionstart-hook-additional-context-is-never-injected-into-agents-initial-system-context/158452); reconfirmed still-open against Cursor 3.6.31). When `additionalContext` is the only delivery path, recalled memories never reach the model — the agent answers as if Hindsight isn't installed.
+
+This plugin works around the bug by **also** writing the recalled memories to `<workspace>/.cursor/rules/hindsight-session.mdc` with `alwaysApply: true` in the frontmatter. Workspace rules files *are* reliably injected by Cursor's rules engine, so the agent sees the memories on the very first prompt of each new chat.
+
+What this means in practice:
+
+- **Every new agent's first prompt has memories.** Cursor blocks prompt submission until the `sessionStart` hook returns — verified empirically. The only delay is the recall latency itself (typically <1s).
+- **The rules file is regenerated at the top of every `sessionStart`.** Stale memories from a previous session never linger.
+- **The rules file is auto-`.gitignore`'d** in git workspaces. It's safe to delete by hand; it'll be regenerated.
+- **`additionalContext` is still emitted to stdout** for forward-compat. If Cursor restores the native channel, the same plugin keeps working without code changes.
+
+You can disable the rules-file write entirely (`useRulesFileFallback: false`) — then the plugin relies on `additionalContext`, which means no memory delivery until Cursor fixes the upstream bug. Useful only if you'd rather see the bug bite than have the plugin touch your workspace.
 
 ### 2. MCP Server (on-demand)
 
@@ -167,6 +182,8 @@ All settings live in `~/.hindsight/cursor.json`. Every setting can also be overr
 | `recallTypes` | — | `["world", "experience"]` | Memory types to recall |
 | `recallMaxQueryChars` | `HINDSIGHT_RECALL_MAX_QUERY_CHARS` | `800` | Max characters in the recall query |
 | `recallPromptPreamble` | — | *(see settings.json)* | Text prepended to recalled memories |
+| `useRulesFileFallback` | `HINDSIGHT_USE_RULES_FILE_FALLBACK` | `true` | Write recalled memories to `<workspace>/.cursor/rules/hindsight-session.mdc` so Cursor's rules engine injects them. Workaround for [the broken native `additionalContext` channel](#how-session-memory-reaches-the-agent). |
+| `appendToGitignore` | `HINDSIGHT_APPEND_TO_GITIGNORE` | `true` | When writing the rules-file fallback, idempotently append its path to the workspace `.gitignore` (no-op for non-git workspaces). |
 
 ### Auto-Retain
 
