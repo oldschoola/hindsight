@@ -32,6 +32,12 @@ from lib.client import HindsightClient
 from lib.config import debug_log, load_config
 from lib.content import format_current_time, format_memories
 from lib.daemon import get_api_url
+from lib.rules_file import (
+    ensure_gitignored,
+    format_rule_content,
+    rotate_session_rules,
+    write_session_rules,
+)
 from lib.state import write_state
 
 LAST_RECALL_STATE = "last_recall.json"
@@ -101,6 +107,15 @@ def main():
         return
 
     debug_log(config, f"sessionStart hook input keys: {list(hook_input.keys())}")
+
+    # Rotate the workspace rules-file fallback up front — if recall later returns
+    # nothing, the workspace ends up with no rules file rather than carrying
+    # stale memories from a previous session. See lib/rules_file.py for the
+    # upstream Cursor bug this works around.
+    workspace_roots = hook_input.get("workspace_roots") or []
+    workspace_root = workspace_roots[0] if workspace_roots else ""
+    if workspace_root and config.get("useRulesFileFallback", True):
+        rotate_session_rules(workspace_root, debug_fn=lambda m: debug_log(config, m))
 
     # Resolve API URL — allow daemon start since this is session start
     def _dbg(*a):
@@ -174,7 +189,21 @@ def main():
     # Save last recall to state
     _write_recall_status("success", bank_id=bank_id, result_count=len(results), query_length=len(query))
 
-    # Output for Cursor sessionStart hook — additionalContext is supported here
+    # Workaround for Cursor's broken sessionStart additionalContext path: write
+    # the recalled memories to a workspace .cursor/rules/hindsight-session.mdc
+    # file so the rules engine injects them reliably. We still emit
+    # additionalContext below so the same plugin works on the native path the
+    # day Cursor fixes the bug — no protocol change required.
+    if workspace_root and config.get("useRulesFileFallback", True):
+        rule_content = format_rule_content(memories_formatted, preamble, current_time)
+        wrote = write_session_rules(
+            workspace_root, rule_content, debug_fn=lambda m: debug_log(config, m)
+        )
+        if wrote and config.get("appendToGitignore", True):
+            ensure_gitignored(workspace_root, debug_fn=lambda m: debug_log(config, m))
+
+    # Output for Cursor sessionStart hook — additionalContext is the native path
+    # (currently a no-op in 3.6.x due to the bug; kept for forward-compat).
     output = {
         "additionalContext": context_message,
     }

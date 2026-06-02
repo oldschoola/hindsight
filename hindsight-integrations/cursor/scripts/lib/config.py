@@ -37,6 +37,10 @@ DEFAULTS = {
     "daemonIdleTimeout": 300,
     "embedVersion": "latest",
     "embedPackagePath": None,
+    # Workaround for Cursor's broken sessionStart additionalContext path.
+    # See scripts/lib/rules_file.py for the upstream bug link.
+    "useRulesFileFallback": True,
+    "appendToGitignore": True,
     # Bank
     "bankId": "cursor",
     "bankIdPrefix": "",
@@ -74,6 +78,8 @@ ENV_OVERRIDES = {
     "HINDSIGHT_RETAIN_CONTEXT": ("retainContext", str),
     "HINDSIGHT_DYNAMIC_BANK_ID": ("dynamicBankId", bool),
     "HINDSIGHT_BANK_MISSION": ("bankMission", str),
+    "HINDSIGHT_USE_RULES_FILE_FALLBACK": ("useRulesFileFallback", bool),
+    "HINDSIGHT_APPEND_TO_GITIGNORE": ("appendToGitignore", bool),
     "HINDSIGHT_LLM_PROVIDER": ("llmProvider", str),
     "HINDSIGHT_LLM_MODEL": ("llmModel", str),
     "HINDSIGHT_DEBUG": ("debug", bool),
