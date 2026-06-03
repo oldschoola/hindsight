@@ -39,6 +39,12 @@ const sidebars: SidebarsConfig = {
         },
         {
           type: 'doc',
+          id: 'developer/curation',
+          label: 'Curation',
+          customProps: { icon: 'lu-eraser' },
+        },
+        {
+          type: 'doc',
           id: 'developer/multilingual',
           label: 'Multilingual',
           customProps: { icon: 'lu-languages' },
