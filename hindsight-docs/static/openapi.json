@@ -4111,6 +4111,82 @@
         }
       }
     },
+    "/v1/default/banks/{bank_id}/memories/purge-invalidated": {
+      "post": {
+        "tags": [
+          "Memory"
+        ],
+        "summary": "Purge invalidated memories",
+        "description": "Permanently delete invalidated memory units (storage reclamation). This is the irreversible second phase of curation: invalidate soft-retires a memory (reversible); purge hard-deletes invalidated rows past an optional retention window. Valid memories are never affected.",
+        "operationId": "purge_invalidated_memories",
+        "parameters": [
+          {
+            "name": "bank_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Bank Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/PurgeInvalidatedRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurgeInvalidatedResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/default/banks/{bank_id}/memories/{memory_id}/observations": {
       "delete": {
         "tags": [
@@ -10025,6 +10101,47 @@
             }
           ],
           "total": 150
+        }
+      },
+      "PurgeInvalidatedRequest": {
+        "properties": {
+          "older_than_days": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Older Than Days",
+            "description": "Only purge memories invalidated at least this many days ago. Omit to purge all invalidated memories regardless of age."
+          }
+        },
+        "type": "object",
+        "title": "PurgeInvalidatedRequest",
+        "description": "Request model for permanently deleting invalidated memory units (GC).",
+        "example": {
+          "older_than_days": 30
+        }
+      },
+      "PurgeInvalidatedResponse": {
+        "properties": {
+          "purged_count": {
+            "type": "integer",
+            "title": "Purged Count",
+            "description": "Number of invalidated memory units permanently deleted."
+          }
+        },
+        "type": "object",
+        "required": [
+          "purged_count"
+        ],
+        "title": "PurgeInvalidatedResponse",
+        "description": "Response model for the purge-invalidated endpoint.",
+        "example": {
+          "purged_count": 825
         }
       },
       "RecallRequest": {

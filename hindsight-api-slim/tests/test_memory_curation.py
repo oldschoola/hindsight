@@ -373,3 +373,67 @@ class TestGuardsAndListing:
         assert not _hit(after), "invalidated fact must be excluded from recall"
 
         await memory.delete_bank(bank_id, request_context=request_context)
+
+
+# ---------------------------------------------------------------------------
+# Purge (GC / storage reclamation)
+# ---------------------------------------------------------------------------
+
+
+class TestPurge:
+    @pytest.mark.asyncio
+    async def test_purge_deletes_only_invalidated(self, memory: MemoryEngine, request_context: RequestContext):
+        bank_id = f"test-curation-purge-{uuid.uuid4().hex[:8]}"
+        await _ensure_bank(memory, bank_id, request_context)
+
+        pool = await memory._get_pool()
+        async with pool.acquire() as conn:
+            keep = await _insert_memory(conn, memory, bank_id, "A valid fact to keep.")
+            drop = await _insert_memory(conn, memory, bank_id, "A fact to retire then purge.")
+
+        with (
+            patch.object(memory, "submit_async_consolidation", new=AsyncMock()),
+            patch.object(memory, "submit_async_graph_maintenance", new=AsyncMock()),
+        ):
+            await memory.update_memory_unit(bank_id, str(drop), state="invalidated", request_context=request_context)
+            result = await memory.purge_invalidated_memories(bank_id, request_context=request_context)
+
+        assert result["purged_count"] == 1
+        async with pool.acquire() as conn:
+            assert await conn.fetchval("SELECT COUNT(*) FROM memory_units WHERE id = $1", drop) == 0
+            assert await conn.fetchval("SELECT COUNT(*) FROM memory_units WHERE id = $1", keep) == 1
+
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+    @pytest.mark.asyncio
+    async def test_purge_respects_retention_window(self, memory: MemoryEngine, request_context: RequestContext):
+        bank_id = f"test-curation-purge-age-{uuid.uuid4().hex[:8]}"
+        await _ensure_bank(memory, bank_id, request_context)
+
+        pool = await memory._get_pool()
+        async with pool.acquire() as conn:
+            old = await _insert_memory(conn, memory, bank_id, "Old invalidated fact.")
+            fresh = await _insert_memory(conn, memory, bank_id, "Freshly invalidated fact.")
+
+        with (
+            patch.object(memory, "submit_async_consolidation", new=AsyncMock()),
+            patch.object(memory, "submit_async_graph_maintenance", new=AsyncMock()),
+        ):
+            await memory.update_memory_unit(bank_id, str(old), state="invalidated", request_context=request_context)
+            await memory.update_memory_unit(bank_id, str(fresh), state="invalidated", request_context=request_context)
+            # Backdate the "old" row's invalidation timestamp.
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE memory_units SET invalidated_at = now() - interval '10 days' WHERE id = $1",
+                    old,
+                )
+            result = await memory.purge_invalidated_memories(
+                bank_id, older_than_days=5, request_context=request_context
+            )
+
+        assert result["purged_count"] == 1
+        async with pool.acquire() as conn:
+            assert await conn.fetchval("SELECT COUNT(*) FROM memory_units WHERE id = $1", old) == 0
+            assert await conn.fetchval("SELECT state FROM memory_units WHERE id = $1", fresh) == "invalidated"
+
+        await memory.delete_bank(bank_id, request_context=request_context)
