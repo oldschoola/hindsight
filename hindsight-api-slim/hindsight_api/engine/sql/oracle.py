@@ -248,6 +248,7 @@ class OracleDialect(SQLDialect):
             f" FROM {table}"
             f" WHERE bank_id = {bank_id_param}"
             f"   AND fact_type = '{fact_type}'"
+            f"   AND state = 'valid'"
             f"   AND embedding IS NOT NULL"
             f"   AND (1 - VECTOR_DISTANCE(embedding, {embedding_param}, COSINE)) >= 0.3"
             f"   {tags_clause}"
@@ -286,6 +287,7 @@ class OracleDialect(SQLDialect):
             f" FROM {table}"
             f" WHERE bank_id = {bank_id_param}"
             f"   AND fact_type = '{fact_type}'"
+            f"   AND state = 'valid'"
             # CONTAINS already gates to genuine matches; the configurable floor
             # (default 0) keeps the threshold semantics uniform across backends.
             f"   AND CONTAINS(text, {text_param}, {label}) > {bm25_min_score:g}"

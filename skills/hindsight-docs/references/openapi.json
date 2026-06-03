@@ -304,6 +304,22 @@
             }
           },
           {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
@@ -408,6 +424,80 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Memory"
+        ],
+        "summary": "Curate memory unit",
+        "description": "Edit a memory's text and/or change its curation state (invalidate / revert). Invalidated memories are excluded from recall, consolidation, and graph maintenance but kept for audit (reversible). Only world/experience facts can be curated; observations are derived.",
+        "operationId": "update_memory",
+        "parameters": [
+          {
+            "name": "bank_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Bank Id"
+            }
+          },
+          {
+            "name": "memory_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Memory Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateMemoryRequest"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -11566,6 +11656,53 @@
         "type": "object",
         "title": "UpdateDocumentResponse",
         "description": "Response model for update document endpoint."
+      },
+      "UpdateMemoryRequest": {
+        "properties": {
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text",
+            "description": "New fact text. Re-embeds the memory, drops its derived observations and links, and triggers re-consolidation. The previous text is preserved in the memory's history."
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State",
+            "description": "Curation state: 'invalidated' to soft-retire the memory (excluded from recall/consolidation, links and derived observations pruned, embedding dropped) or 'valid' to revert. Reversible."
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "Optional free-text reason recorded on the memory."
+          }
+        },
+        "type": "object",
+        "title": "UpdateMemoryRequest",
+        "description": "Request model for curating a single memory unit (edit / invalidate / revert).\n\nProvide ``text`` to correct the fact, and/or ``state`` to invalidate\n('invalidated') or revert ('valid') it. ``reason`` is optional free text\nrecorded on the memory. At least one of ``text`` or ``state`` must be set.\nOnly world/experience facts can be curated; observations are derived.",
+        "example": {
+          "reason": "superseded: server decommissioned 2026-06-01",
+          "state": "invalidated"
+        }
       },
       "UpdateMentalModelRequest": {
         "properties": {

@@ -122,6 +122,9 @@ _TABLES: tuple[str, ...] = (
         text_signals      CLOB,
         consolidation_failed_at TIMESTAMP WITH TIME ZONE,
         search_vector     CLOB,
+        state             VARCHAR2(32)   DEFAULT 'valid' NOT NULL,
+        invalidation_reason CLOB,
+        invalidated_at    TIMESTAMP WITH TIME ZONE,
         created_at        TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
         updated_at        TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
         CONSTRAINT pk_memory_units PRIMARY KEY (id),
@@ -130,6 +133,7 @@ _TABLES: tuple[str, ...] = (
         CONSTRAINT fk_mu_chunk FOREIGN KEY (chunk_id)
             REFERENCES chunks(chunk_id) ON DELETE SET NULL,
         CONSTRAINT chk_mu_fact_type CHECK (fact_type IN ('world', 'experience', 'observation')),
+        CONSTRAINT chk_mu_state CHECK (state IN ('valid', 'invalidated')),
         CONSTRAINT chk_mu_confidence CHECK (
             confidence_score IS NULL
             OR (confidence_score >= 0.0 AND confidence_score <= 1.0)

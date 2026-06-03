@@ -486,6 +486,7 @@ class PostgreSQLOps(DataAccessOps):
                          FROM {mu_table} mu
                          WHERE mu.bank_id = $4
                            AND mu.fact_type = src.fact_type
+                           AND mu.state = 'valid'
                            AND mu.event_date <= src.event_date
                            AND mu.id != src.unit_id
                          ORDER BY mu.event_date DESC
@@ -496,6 +497,7 @@ class PostgreSQLOps(DataAccessOps):
                          FROM {mu_table} mu
                          WHERE mu.bank_id = $4
                            AND mu.fact_type = src.fact_type
+                           AND mu.state = 'valid'
                            AND mu.event_date > src.event_date
                            AND mu.id != src.unit_id
                          ORDER BY mu.event_date ASC
@@ -542,6 +544,7 @@ class PostgreSQLOps(DataAccessOps):
                 ) t
                 JOIN {mu_table} mu ON mu.id = t.unit_id
                 WHERE mu.fact_type = $2
+                  AND mu.state = 'valid'
                 GROUP BY mu.id
                 ORDER BY score DESC
                 LIMIT $3
@@ -573,6 +576,7 @@ class PostgreSQLOps(DataAccessOps):
                     WHERE ml.from_unit_id = ANY($1::uuid[])
                       AND ml.link_type = 'semantic'
                       AND mu.fact_type = $2
+                      AND mu.state = 'valid'
                       AND mu.id != ALL($1::uuid[])
                     UNION ALL
                     SELECT
@@ -585,6 +589,7 @@ class PostgreSQLOps(DataAccessOps):
                     WHERE ml.to_unit_id = ANY($1::uuid[])
                       AND ml.link_type = 'semantic'
                       AND mu.fact_type = $2
+                      AND mu.state = 'valid'
                       AND mu.id != ALL($1::uuid[])
                 ) sem_raw
                 GROUP BY id, text, context, event_date, occurred_start,
@@ -605,6 +610,7 @@ class PostgreSQLOps(DataAccessOps):
                 WHERE ml.from_unit_id = ANY($1::uuid[])
                   AND ml.link_type IN ('causes', 'caused_by', 'enables', 'prevents')
                   AND mu.fact_type = $2
+                  AND mu.state = 'valid'
                 ORDER BY mu.id, ml.weight DESC
                 LIMIT $3
             )"""
