@@ -2561,6 +2561,34 @@ export type OperationsListResponse = {
 };
 
 /**
+ * PurgeInvalidatedRequest
+ *
+ * Request model for permanently deleting invalidated memory units (GC).
+ */
+export type PurgeInvalidatedRequest = {
+  /**
+   * Older Than Days
+   *
+   * Only purge memories invalidated at least this many days ago. Omit to purge all invalidated memories regardless of age.
+   */
+  older_than_days?: number | null;
+};
+
+/**
+ * PurgeInvalidatedResponse
+ *
+ * Response model for the purge-invalidated endpoint.
+ */
+export type PurgeInvalidatedResponse = {
+  /**
+   * Purged Count
+   *
+   * Number of invalidated memory units permanently deleted.
+   */
+  purged_count: number;
+};
+
+/**
  * RecallRequest
  *
  * Request model for recall endpoint.
@@ -3409,6 +3437,37 @@ export type UpdateDocumentResponse = {
 };
 
 /**
+ * UpdateMemoryRequest
+ *
+ * Request model for curating a single memory unit (edit / invalidate / revert).
+ *
+ * Provide ``text`` to correct the fact, and/or ``state`` to invalidate
+ * ('invalidated') or revert ('valid') it. ``reason`` is optional free text
+ * recorded on the memory. At least one of ``text`` or ``state`` must be set.
+ * Only world/experience facts can be curated; observations are derived.
+ */
+export type UpdateMemoryRequest = {
+  /**
+   * Text
+   *
+   * New fact text. Re-embeds the memory, drops its derived observations and links, and triggers re-consolidation. The previous text is preserved in the memory's history.
+   */
+  text?: string | null;
+  /**
+   * State
+   *
+   * Curation state: 'invalidated' to soft-retire the memory (excluded from recall/consolidation, links and derived observations pruned, embedding dropped) or 'valid' to revert. Reversible.
+   */
+  state?: string | null;
+  /**
+   * Reason
+   *
+   * Optional free-text reason recorded on the memory.
+   */
+  reason?: string | null;
+};
+
+/**
  * UpdateMentalModelRequest
  *
  * Request model for updating a mental model.
@@ -3834,6 +3893,10 @@ export type ListMemoriesData = {
      */
     consolidation_state?: string | null;
     /**
+     * State
+     */
+    state?: string | null;
+    /**
      * Limit
      */
     limit?: number;
@@ -3895,6 +3958,44 @@ export type GetMemoryErrors = {
 export type GetMemoryError = GetMemoryErrors[keyof GetMemoryErrors];
 
 export type GetMemoryResponses = {
+  /**
+   * Successful Response
+   */
+  200: unknown;
+};
+
+export type UpdateMemoryData = {
+  body: UpdateMemoryRequest;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+    /**
+     * Memory Id
+     */
+    memory_id: string;
+  };
+  query?: never;
+  url: "/v1/default/banks/{bank_id}/memories/{memory_id}";
+};
+
+export type UpdateMemoryErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type UpdateMemoryError = UpdateMemoryErrors[keyof UpdateMemoryErrors];
+
+export type UpdateMemoryResponses = {
   /**
    * Successful Response
    */
@@ -5920,6 +6021,47 @@ export type RecoverConsolidationResponses = {
 
 export type RecoverConsolidationResponse2 =
   RecoverConsolidationResponses[keyof RecoverConsolidationResponses];
+
+export type PurgeInvalidatedMemoriesData = {
+  /**
+   * Request
+   */
+  body?: PurgeInvalidatedRequest | null;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: never;
+  url: "/v1/default/banks/{bank_id}/memories/purge-invalidated";
+};
+
+export type PurgeInvalidatedMemoriesErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type PurgeInvalidatedMemoriesError =
+  PurgeInvalidatedMemoriesErrors[keyof PurgeInvalidatedMemoriesErrors];
+
+export type PurgeInvalidatedMemoriesResponses = {
+  /**
+   * Successful Response
+   */
+  200: PurgeInvalidatedResponse;
+};
+
+export type PurgeInvalidatedMemoriesResponse =
+  PurgeInvalidatedMemoriesResponses[keyof PurgeInvalidatedMemoriesResponses];
 
 export type ClearMemoryObservationsData = {
   body?: never;

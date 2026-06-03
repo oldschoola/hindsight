@@ -1227,7 +1227,13 @@
     "viewHistory": "履歴を表示",
     "tracedByTitle": "作成元",
     "tracedBySummary": "{calls} 回の呼び出し · {tokens} トークン",
-    "consolidatedByTitle": "統合元"
+    "consolidatedByTitle": "統合元",
+    "curationActions": "Curation",
+    "curationInvalidate": "Invalidate",
+    "curationRevert": "Restore",
+    "curationStateInvalidated": "Invalidated",
+    "curationReasonLabel": "Reason",
+    "curationInvalidateError": "Failed to update memory"
   },
   "documentChunkModal": {
     "documentTitle": "ドキュメント詳細",

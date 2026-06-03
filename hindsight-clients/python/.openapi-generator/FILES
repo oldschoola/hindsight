@@ -96,6 +96,8 @@ hindsight_client_api/models/observation_scopes.py
 hindsight_client_api/models/operation_response.py
 hindsight_client_api/models/operation_status_response.py
 hindsight_client_api/models/operations_list_response.py
+hindsight_client_api/models/purge_invalidated_request.py
+hindsight_client_api/models/purge_invalidated_response.py
 hindsight_client_api/models/recall_request.py
 hindsight_client_api/models/recall_response.py
 hindsight_client_api/models/recall_result.py
@@ -130,6 +132,7 @@ hindsight_client_api/models/update_directive_request.py
 hindsight_client_api/models/update_disposition_request.py
 hindsight_client_api/models/update_document_request.py
 hindsight_client_api/models/update_document_response.py
+hindsight_client_api/models/update_memory_request.py
 hindsight_client_api/models/update_mental_model_request.py
 hindsight_client_api/models/update_webhook_request.py
 hindsight_client_api/models/validation_error.py

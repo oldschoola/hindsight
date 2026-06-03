@@ -1227,7 +1227,13 @@
     "viewHistory": "Voir l'historique",
     "tracedByTitle": "Créé par",
     "tracedBySummary": "{calls} appels · {tokens} tokens",
-    "consolidatedByTitle": "Consolidé par"
+    "consolidatedByTitle": "Consolidé par",
+    "curationActions": "Curation",
+    "curationInvalidate": "Invalidate",
+    "curationRevert": "Restore",
+    "curationStateInvalidated": "Invalidated",
+    "curationReasonLabel": "Reason",
+    "curationInvalidateError": "Failed to update memory"
   },
   "documentChunkModal": {
     "documentTitle": "Détails du document",

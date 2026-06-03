@@ -1227,7 +1227,13 @@
     "viewHistory": "View History",
     "tracedByTitle": "Created by",
     "tracedBySummary": "{calls} calls · {tokens} tokens",
-    "consolidatedByTitle": "Consolidated by"
+    "consolidatedByTitle": "Consolidated by",
+    "curationActions": "Curation",
+    "curationInvalidate": "Invalidate",
+    "curationRevert": "Restore",
+    "curationStateInvalidated": "Invalidated",
+    "curationReasonLabel": "Reason",
+    "curationInvalidateError": "Failed to update memory"
   },
   "documentChunkModal": {
     "documentTitle": "Document Details",
@@ -1497,7 +1503,9 @@
         "notFound": "Memory not found",
         "retain": "Failed to batch retain",
         "retainAsync": "Failed to batch retain async",
-        "history": "Failed to fetch observation history"
+        "history": "Failed to fetch observation history",
+        "update": "Failed to update memory",
+        "purge": "Failed to purge invalidated memories"
       },
       "documents": {
         "fetchList": "Failed to fetch documents",

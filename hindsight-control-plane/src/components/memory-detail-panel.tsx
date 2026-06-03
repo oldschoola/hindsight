@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { useTranslations } from "next-intl";
 import { Button } from "@/components/ui/button";
 import { TagList } from "@/components/ui/tag-list";
-import { Copy, Check, X, Loader2, Calendar, History, Activity } from "lucide-react";
+import { Copy, Check, X, Loader2, Calendar, History, Activity, Ban, RotateCcw } from "lucide-react";
 import { DocumentChunkModal } from "./document-chunk-modal";
 import { MemoryDetailModal } from "./memory-detail-modal";
 import { TraceDialog } from "./llm-requests-view";
@@ -167,6 +167,7 @@ export function MemoryDetailPanel({
   const [loading, setLoading] = useState(false);
   const [sourceMemoryModalId, setSourceMemoryModalId] = useState<string | null>(null);
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
+  const [curating, setCurating] = useState(false);
 
   // Fetch full memory data when panel opens
   // For mental models, use getMentalModel to get source memories
@@ -235,10 +236,29 @@ export function MemoryDetailPanel({
     setModalId(null);
   };
 
+  const handleCurate = async (nextState: "valid" | "invalidated") => {
+    const id = displayMemory?.id || displayMemory?.node_id;
+    if (!id || !bankId || curating) return;
+    setCurating(true);
+    try {
+      await client.updateMemory(id, bankId, { state: nextState });
+      const refreshed = await client.getMemory(id, bankId);
+      setFullMemory(refreshed);
+    } catch (err) {
+      console.error("Failed to curate memory:", err);
+    } finally {
+      setCurating(false);
+    }
+  };
+
   if (!memory) return null;
 
   // Handle both 'id' and 'node_id' (trace results use node_id)
   const memoryId = displayMemory.id || displayMemory.node_id;
+  const isInvalidated = displayMemory?.state === "invalidated";
+  // Curation applies only to raw world/experience facts, not derived observations.
+  const canCurate =
+    !isObservation && Boolean(displayMemory?.id || displayMemory?.node_id) && Boolean(bankId);
 
   const labelSize = compact ? "text-[10px]" : "text-xs";
   const textSize = compact ? "text-xs" : "text-sm";
@@ -272,6 +292,48 @@ export function MemoryDetailPanel({
                   {displayMemory.text}
                 </div>
               </div>
+
+              {/* Curation: state badge + invalidate/revert (raw facts only) */}
+              {canCurate && (
+                <div>
+                  <div className="text-xs font-bold text-muted-foreground uppercase mb-2">
+                    {t("curationActions")}
+                  </div>
+                  <div className="flex items-center gap-3">
+                    {isInvalidated ? (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={curating}
+                        onClick={() => handleCurate("valid")}
+                      >
+                        <RotateCcw className="h-4 w-4 mr-1.5" />
+                        {t("curationRevert")}
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        disabled={curating}
+                        onClick={() => handleCurate("invalidated")}
+                      >
+                        <Ban className="h-4 w-4 mr-1.5" />
+                        {t("curationInvalidate")}
+                      </Button>
+                    )}
+                    {isInvalidated && (
+                      <span className="inline-flex items-center rounded-full bg-destructive/10 text-destructive px-2 py-0.5 text-xs font-medium">
+                        {t("curationStateInvalidated")}
+                      </span>
+                    )}
+                  </div>
+                  {isInvalidated && displayMemory.invalidation_reason && (
+                    <div className="mt-2 text-xs text-muted-foreground">
+                      {t("curationReasonLabel")}: {displayMemory.invalidation_reason}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Context (not shown for observations) */}
               {displayMemory.context && !isObservation && (

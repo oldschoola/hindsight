@@ -1227,7 +1227,13 @@
     "viewHistory": "기록 보기",
     "tracedByTitle": "생성 출처",
     "tracedBySummary": "{calls}회 호출 · {tokens} 토큰",
-    "consolidatedByTitle": "통합 출처"
+    "consolidatedByTitle": "통합 출처",
+    "curationActions": "Curation",
+    "curationInvalidate": "Invalidate",
+    "curationRevert": "Restore",
+    "curationStateInvalidated": "Invalidated",
+    "curationReasonLabel": "Reason",
+    "curationInvalidateError": "Failed to update memory"
   },
   "documentChunkModal": {
     "documentTitle": "문서 상세 정보",

@@ -695,6 +695,7 @@ export class ControlPlaneClient {
       type?: string;
       q?: string;
       consolidationState?: "failed" | "pending" | "done";
+      state?: "valid" | "invalidated";
       limit?: number;
       offset?: number;
     }
@@ -703,6 +704,7 @@ export class ControlPlaneClient {
     if (options?.type) params.set("type", options.type);
     if (options?.q) params.set("q", options.q);
     if (options?.consolidationState) params.set("consolidation_state", options.consolidationState);
+    if (options?.state) params.set("state", options.state);
     if (options?.limit !== undefined) params.set("limit", String(options.limit));
     if (options?.offset !== undefined) params.set("offset", String(options.offset));
     return this.fetchApi<{
@@ -721,11 +723,47 @@ export class ControlPlaneClient {
         tags: string[];
         consolidated_at: string | null;
         consolidation_failed_at: string | null;
+        state: "valid" | "invalidated";
+        invalidation_reason: string | null;
+        invalidated_at: string | null;
       }>;
       total: number;
       limit: number;
       offset: number;
     }>(`/api/list?${params.toString()}`);
+  }
+
+  /**
+   * Curate a memory unit: edit its text and/or change its state
+   * (invalidate / revert). Only world/experience facts can be curated.
+   */
+  async updateMemory(
+    memoryId: string,
+    bankId: string,
+    update: { text?: string; state?: "valid" | "invalidated"; reason?: string }
+  ) {
+    return this.fetchApi(memoryApi(memoryId, bankId), {
+      method: "PATCH",
+      body: JSON.stringify({ ...update, bank_id: bankId }),
+    });
+  }
+
+  /**
+   * Permanently delete invalidated memories (storage reclamation). Optionally
+   * restrict to memories invalidated at least `olderThanDays` ago.
+   */
+  async purgeInvalidatedMemories(bankId: string, olderThanDays?: number) {
+    return this.fetchApi<{ purged_count: number }>(
+      `/api/memories/purge-invalidated?bank_id=${encodeURIComponent(bankId)}`,
+      {
+        method: "POST",
+        body: JSON.stringify(
+          olderThanDays != null
+            ? { bank_id: bankId, older_than_days: olderThanDays }
+            : { bank_id: bankId }
+        ),
+      }
+    );
   }
 
   /**
@@ -753,6 +791,9 @@ export class ControlPlaneClient {
       chunk_id: string | null;
       tags: string[];
       observation_scopes: string | string[][] | null;
+      state: "valid" | "invalidated";
+      invalidation_reason: string | null;
+      invalidated_at: string | null;
       history?: {
         previous_text: string;
         previous_tags: string[];

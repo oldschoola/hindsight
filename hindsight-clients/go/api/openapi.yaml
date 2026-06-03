@@ -192,6 +192,14 @@ paths:
         style: form
       - explode: true
         in: query
+        name: state
+        required: false
+        schema:
+          nullable: true
+          type: string
+        style: form
+      - explode: true
+        in: query
         name: limit
         required: false
         schema:
@@ -276,6 +284,58 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Get memory unit
+      tags:
+      - Memory
+    patch:
+      description: "Edit a memory's text and/or change its curation state (invalidate\
+        \ / revert). Invalidated memories are excluded from recall, consolidation,\
+        \ and graph maintenance but kept for audit (reversible). Only world/experience\
+        \ facts can be curated; observations are derived."
+      operationId: update_memory
+      parameters:
+      - explode: false
+        in: path
+        name: bank_id
+        required: true
+        schema:
+          title: Bank Id
+          type: string
+        style: simple
+      - explode: false
+        in: path
+        name: memory_id
+        required: true
+        schema:
+          title: Memory Id
+          type: string
+        style: simple
+      - explode: false
+        in: header
+        name: authorization
+        required: false
+        schema:
+          nullable: true
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateMemoryRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Curate memory unit
       tags:
       - Memory
   /v1/default/banks/{bank_id}/memories/{memory_id}/history:
@@ -2764,6 +2824,51 @@ paths:
       summary: Recover failed consolidation
       tags:
       - Banks
+  /v1/default/banks/{bank_id}/memories/purge-invalidated:
+    post:
+      description: "Permanently delete invalidated memory units (storage reclamation).\
+        \ This is the irreversible second phase of curation: invalidate soft-retires\
+        \ a memory (reversible); purge hard-deletes invalidated rows past an optional\
+        \ retention window. Valid memories are never affected."
+      operationId: purge_invalidated_memories
+      parameters:
+      - explode: false
+        in: path
+        name: bank_id
+        required: true
+        schema:
+          title: Bank Id
+          type: string
+        style: simple
+      - explode: false
+        in: header
+        name: authorization
+        required: false
+        schema:
+          nullable: true
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurgeInvalidatedRequest'
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurgeInvalidatedResponse'
+          description: Successful Response
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Purge invalidated memories
+      tags:
+      - Memory
   /v1/default/banks/{bank_id}/memories/{memory_id}/observations:
     delete:
       description: Delete all observations derived from a specific memory and reset
@@ -6574,6 +6679,29 @@ components:
       - operations
       - total
       title: OperationsListResponse
+    PurgeInvalidatedRequest:
+      description: Request model for permanently deleting invalidated memory units
+        (GC).
+      example:
+        older_than_days: 30
+      properties:
+        older_than_days:
+          minimum: 0.0
+          nullable: true
+          type: integer
+      title: PurgeInvalidatedRequest
+    PurgeInvalidatedResponse:
+      description: Response model for the purge-invalidated endpoint.
+      example:
+        purged_count: 825
+      properties:
+        purged_count:
+          description: Number of invalidated memory units permanently deleted.
+          title: Purged Count
+          type: integer
+      required:
+      - purged_count
+      title: PurgeInvalidatedResponse
     RecallRequest:
       description: Request model for recall endpoint.
       example:
@@ -7416,6 +7544,28 @@ components:
           title: Success
           type: boolean
       title: UpdateDocumentResponse
+    UpdateMemoryRequest:
+      description: |-
+        Request model for curating a single memory unit (edit / invalidate / revert).
+
+        Provide ``text`` to correct the fact, and/or ``state`` to invalidate
+        ('invalidated') or revert ('valid') it. ``reason`` is optional free text
+        recorded on the memory. At least one of ``text`` or ``state`` must be set.
+        Only world/experience facts can be curated; observations are derived.
+      example:
+        reason: "superseded: server decommissioned 2026-06-01"
+        state: invalidated
+      properties:
+        text:
+          nullable: true
+          type: string
+        state:
+          nullable: true
+          type: string
+        reason:
+          nullable: true
+          type: string
+      title: UpdateMemoryRequest
     UpdateMentalModelRequest:
       description: Request model for updating a mental model.
       example:

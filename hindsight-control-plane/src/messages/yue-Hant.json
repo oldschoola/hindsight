@@ -1227,7 +1227,13 @@
     "viewHistory": "檢視歷史",
     "tracedByTitle": "建立來源",
     "tracedBySummary": "{calls} 次呼叫 · {tokens} 個權杖",
-    "consolidatedByTitle": "整合來源"
+    "consolidatedByTitle": "整合來源",
+    "curationActions": "Curation",
+    "curationInvalidate": "Invalidate",
+    "curationRevert": "Restore",
+    "curationStateInvalidated": "Invalidated",
+    "curationReasonLabel": "Reason",
+    "curationInvalidateError": "Failed to update memory"
   },
   "documentChunkModal": {
     "documentTitle": "文件詳情",

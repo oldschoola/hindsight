@@ -166,6 +166,9 @@ import type {
   LlmRequestStatsResponses,
   MetricsEndpointMetricsGetData,
   MetricsEndpointMetricsGetResponses,
+  PurgeInvalidatedMemoriesData,
+  PurgeInvalidatedMemoriesErrors,
+  PurgeInvalidatedMemoriesResponses,
   RecallMemoriesData,
   RecallMemoriesErrors,
   RecallMemoriesResponses,
@@ -211,6 +214,9 @@ import type {
   UpdateDocumentData,
   UpdateDocumentErrors,
   UpdateDocumentResponses,
+  UpdateMemoryData,
+  UpdateMemoryErrors,
+  UpdateMemoryResponses,
   UpdateMentalModelData,
   UpdateMentalModelErrors,
   UpdateMentalModelResponses,
@@ -312,6 +318,23 @@ export const getMemory = <ThrowOnError extends boolean = false>(
   (options.client ?? client).get<GetMemoryResponses, GetMemoryErrors, ThrowOnError>({
     url: "/v1/default/banks/{bank_id}/memories/{memory_id}",
     ...options,
+  });
+
+/**
+ * Curate memory unit
+ *
+ * Edit a memory's text and/or change its curation state (invalidate / revert). Invalidated memories are excluded from recall, consolidation, and graph maintenance but kept for audit (reversible). Only world/experience facts can be curated; observations are derived.
+ */
+export const updateMemory = <ThrowOnError extends boolean = false>(
+  options: Options<UpdateMemoryData, ThrowOnError>
+) =>
+  (options.client ?? client).patch<UpdateMemoryResponses, UpdateMemoryErrors, ThrowOnError>({
+    url: "/v1/default/banks/{bank_id}/memories/{memory_id}",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
   });
 
 /**
@@ -1049,6 +1072,27 @@ export const recoverConsolidation = <ThrowOnError extends boolean = false>(
     RecoverConsolidationErrors,
     ThrowOnError
   >({ url: "/v1/default/banks/{bank_id}/consolidation/recover", ...options });
+
+/**
+ * Purge invalidated memories
+ *
+ * Permanently delete invalidated memory units (storage reclamation). This is the irreversible second phase of curation: invalidate soft-retires a memory (reversible); purge hard-deletes invalidated rows past an optional retention window. Valid memories are never affected.
+ */
+export const purgeInvalidatedMemories = <ThrowOnError extends boolean = false>(
+  options: Options<PurgeInvalidatedMemoriesData, ThrowOnError>
+) =>
+  (options.client ?? client).post<
+    PurgeInvalidatedMemoriesResponses,
+    PurgeInvalidatedMemoriesErrors,
+    ThrowOnError
+  >({
+    url: "/v1/default/banks/{bank_id}/memories/purge-invalidated",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
 
 /**
  * Clear observations for a memory
