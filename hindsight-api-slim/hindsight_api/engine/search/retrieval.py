@@ -376,36 +376,45 @@ async def retrieve_temporal_combined(
     params.extend(created_range_params)
 
     # Two-phase entry point query:
-    # Phase 1 (date_ranked): rank by date only — no embedding computation — for all units in
-    #   the temporal window. This lets the planner use date indexes for filtering.
-    # Phase 2 (sim_ranked): join back to memory_units for only the top-50-per-type candidates
-    #   and compute embedding similarity for that small set (≤ 50 × len(fact_types) rows).
-    # This avoids computing embedding distances for potentially thousands of date-range rows.
+    # Phase 1 (date_ranked): take the 50 most-recent in-window units PER fact_type, ranked by
+    #   COALESCE(occurred_start, mentioned_at, occurred_end). A CROSS JOIN LATERAL with an
+    #   ORDER BY ... LIMIT 50 per fact_type lets the planner walk
+    #   idx_memory_units_temporal_recency in date order and STOP after 50 matching rows — so the
+    #   work is bounded to ~50 × len(fact_types) index entries regardless of how many rows fall
+    #   in the window. The earlier form ranked the entire matched set with a window function and
+    #   discarded all but the top 50, which on banks with dense/near-uniform date metadata
+    #   (every recall window matching hundreds of thousands of rows) degraded to a full
+    #   sequential scan + disk-spilling sort — 30s+ on a 660k-row bank. See migration
+    #   f7a8b9c0d1e2 for the supporting index.
+    # Phase 2 (sim_ranked): join back to memory_units for only those ≤ 50-per-type candidates
+    #   and compute embedding similarity for that small set.
     entry_points = await conn.fetch(
         f"""
         WITH date_ranked AS MATERIALIZED (
-            SELECT id, fact_type,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY fact_type
-                       ORDER BY COALESCE(occurred_start, mentioned_at, occurred_end) DESC NULLS LAST
-                   ) AS rn
-            FROM {fq_table("memory_units")}
-            WHERE bank_id = $2
-              AND fact_type = ANY($3)
-              AND embedding IS NOT NULL
-              AND (
-                  (occurred_start IS NOT NULL AND occurred_end IS NOT NULL
-                   AND occurred_start <= $5 AND occurred_end >= $4)
-                  OR
-                  (mentioned_at IS NOT NULL AND mentioned_at BETWEEN $4 AND $5)
-                  OR
-                  (occurred_start IS NOT NULL AND occurred_start BETWEEN $4 AND $5)
-                  OR
-                  (occurred_end IS NOT NULL AND occurred_end BETWEEN $4 AND $5)
-              )
-              {tags_clause}
-              {groups_clause}
-              {created_range_clause}
+            SELECT dr.id
+            FROM unnest($3::text[]) AS ft(fact_type)
+            CROSS JOIN LATERAL (
+                SELECT mu.id
+                FROM {fq_table("memory_units")} mu
+                WHERE mu.bank_id = $2
+                  AND mu.fact_type = ft.fact_type
+                  AND mu.embedding IS NOT NULL
+                  AND (
+                      (mu.occurred_start IS NOT NULL AND mu.occurred_end IS NOT NULL
+                       AND mu.occurred_start <= $5 AND mu.occurred_end >= $4)
+                      OR
+                      (mu.mentioned_at IS NOT NULL AND mu.mentioned_at BETWEEN $4 AND $5)
+                      OR
+                      (mu.occurred_start IS NOT NULL AND mu.occurred_start BETWEEN $4 AND $5)
+                      OR
+                      (mu.occurred_end IS NOT NULL AND mu.occurred_end BETWEEN $4 AND $5)
+                  )
+                  {tags_clause}
+                  {groups_clause}
+                  {created_range_clause}
+                ORDER BY COALESCE(mu.occurred_start, mu.mentioned_at, mu.occurred_end) DESC NULLS LAST
+                LIMIT 50
+            ) dr
         ),
         sim_ranked AS (
             SELECT mu.id, mu.text, mu.context, mu.event_date, mu.occurred_start, mu.occurred_end, mu.mentioned_at, mu.fact_type, mu.proof_count, mu.document_id, mu.chunk_id, mu.tags, mu.metadata,
@@ -413,8 +422,7 @@ async def retrieve_temporal_combined(
                    ROW_NUMBER() OVER (PARTITION BY mu.fact_type ORDER BY mu.embedding <=> $1::vector) AS sim_rn
             FROM date_ranked dr
             JOIN {fq_table("memory_units")} mu ON mu.id = dr.id
-            WHERE dr.rn <= 50
-              AND (1 - (mu.embedding <=> $1::vector)) >= $6
+            WHERE (1 - (mu.embedding <=> $1::vector)) >= $6
         )
         SELECT id, text, context, event_date, occurred_start, occurred_end, mentioned_at, fact_type, proof_count, document_id, chunk_id, tags, metadata, similarity
         FROM sim_ranked
