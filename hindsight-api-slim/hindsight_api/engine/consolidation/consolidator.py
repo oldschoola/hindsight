@@ -25,7 +25,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from itertools import combinations
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, field_validator
 
@@ -83,6 +83,134 @@ def _duplicate_create_target(
     if norm in update_texts:
         return "an UPDATE in this response"
     return None
+
+
+# Top-K existing observations probed (by the new observation's own embedding) when
+# semantic dedup is enabled. Small: we only need the nearest few candidates.
+_DEDUP_TOP_K = 5
+
+
+class _DedupDecision(BaseModel):
+    """Focused 1-by-1 verdict for whether a new observation duplicates an existing one."""
+
+    action: Literal["merge", "keep"]
+    text: str = ""  # the synthesized merged observation (when action == "merge")
+    reason: str = ""
+
+
+_DEDUP_PROMPT = """You reconcile long-term memory observations. A NEW observation is about to be \
+stored, and it is highly similar to an EXISTING one:
+
+[NEW] {new}
+[EXISTING] {existing}
+
+If they assert the SAME fact (wording aside), respond action="merge" and provide `text`: a single \
+observation that preserves EVERY detail from both. If they differ in ANY important detail — a \
+number/quantity, a named entity or language, a negation, or a condition — respond action="keep"."""
+
+
+@dataclass
+class _RunObs:
+    """An observation created during the current consolidation run, kept in-memory so
+    later creates in the same (serial, same-scope) run can dedup against it. The DB ANN
+    probe misses these — same-run rows aren't reliably visible to the HNSW index scan."""
+
+    id: str
+    text: str
+    embedding: list[float]
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(x * x for x in b) ** 0.5
+    return dot / (na * nb) if na and nb else 0.0
+
+
+async def _dedup_reconcile_create(
+    conn: "Connection",
+    memory_engine: "MemoryEngine",
+    bank_id: str,
+    config: Any,
+    dedup_llm_config: Any,
+    create_text: str,
+    create_embedding: list[float],
+    create_source_ids: list[uuid.UUID],
+    tags: list[str] | None,
+    run_cache: "list[_RunObs] | None",
+) -> str | None:
+    """Semantic dedup for a single CREATE (create-time, focused 1-by-1).
+
+    Finds the nearest existing observation to the new one (anchored on the observation
+    text — the correct comparison for obs<->obs duplication, unlike consolidation recall
+    which is anchored on the raw fact) from the union of two candidate sources:
+      (1) DB ANN top-K over observations committed by PRIOR consolidation runs;
+      (2) in-memory cosine vs ``run_cache`` — observations created in THIS run, which the
+          DB probe misses (same-run rows aren't reliably visible to the HNSW index scan).
+          Same-scope batches run serially, so the cache holds every earlier in-run create.
+
+    If the best candidate is >= ``consolidation_dedup_threshold``, asks the LLM (scope
+    ``consolidation_dedup``) to merge-or-keep — the LLM reads both texts, so a word-level
+    difference (number / negation / entity) is respected. On "merge", folds the new source
+    facts + the synthesized text into the existing observation and returns its id (caller
+    skips the CREATE). Returns None when there is no near twin or the LLM keeps them distinct.
+    """
+    from ..search.retrieval import retrieve_semantic_bm25_combined
+
+    threshold = config.consolidation_dedup_threshold
+    best_id: str | None = None
+    best_text = ""
+    best_sim = threshold  # only candidates at/above the threshold are considered
+
+    tags_match = "all_strict" if tags else "any"
+    grouped = await retrieve_semantic_bm25_combined(
+        conn,
+        str(create_embedding),
+        create_text,
+        bank_id,
+        ["observation"],
+        _DEDUP_TOP_K,
+        tags=tags,
+        tags_match=tags_match,
+    )
+    for r in grouped.get("observation", ([], []))[0]:
+        sim = r.similarity or 0.0
+        if sim >= best_sim:
+            best_id, best_text, best_sim = str(r.id), r.text, sim
+    for ro in run_cache or ():
+        sim = _cosine(create_embedding, ro.embedding)
+        if sim >= best_sim:
+            best_id, best_text, best_sim = ro.id, ro.text, sim
+
+    if best_id is None:
+        return None
+
+    decision: _DedupDecision = await dedup_llm_config.call(
+        messages=[{"role": "user", "content": _DEDUP_PROMPT.format(new=create_text, existing=best_text)}],
+        response_format=_DedupDecision,
+        scope="consolidation_dedup",
+    )
+    if decision.action != "merge":
+        return None
+
+    merged_text = decision.text.strip() or best_text
+    # Fold the new source facts into the twin and persist the merged text. We keep the twin's
+    # existing embedding: the merged text is >= threshold similar, so the stored vector stays
+    # representative and we avoid a re-embed + a dialect-specific vector UPDATE.
+    await conn.execute(
+        f"""
+        UPDATE {fq_table("memory_units")}
+        SET text = $1,
+            source_memory_ids = (SELECT array_agg(DISTINCT e) FROM unnest(source_memory_ids || $2::uuid[]) e),
+            proof_count = (SELECT count(DISTINCT e) FROM unnest(source_memory_ids || $2::uuid[]) e),
+            updated_at = now()
+        WHERE id = $3::uuid
+        """,
+        merged_text,
+        create_source_ids,
+        uuid.UUID(best_id),
+    )
+    return best_id
 
 
 @dataclass
@@ -581,7 +709,9 @@ async def _run_consolidation_job(
                     scopes.update(_resolve_write_scopes(memory))
             group_scopes.append(sorted(scopes, key=_scope_sort_key))
 
-        async def _process_one_llm_batch(llm_batch_local: list[dict[str, Any]], batch_num_local: int) -> _BatchDeltas:
+        async def _process_one_llm_batch(
+            llm_batch_local: list[dict[str, Any]], batch_num_local: int, dedup_cache: "list[_RunObs] | None" = None
+        ) -> _BatchDeltas:
             """Process one LLM batch independently. Returns local deltas + cancelled flag.
 
             Each batch records timings/llm-call counters into its OWN
@@ -630,6 +760,7 @@ async def _run_consolidation_job(
                                 perf=batch_perf,
                                 config=config,
                                 obs_tags_override=obs_tags,
+                                dedup_cache=dedup_cache,
                             )
                             sub_deleted += pass_deleted
                             sub_llm_failed = sub_llm_failed or pass_failed
@@ -666,6 +797,7 @@ async def _run_consolidation_job(
                             request_context=request_context,
                             perf=batch_perf,
                             config=config,
+                            dedup_cache=dedup_cache,
                         )
 
                 all_deleted += sub_deleted
@@ -800,9 +932,12 @@ async def _run_consolidation_job(
         ) -> list[_BatchDeltas]:
             # Batches within a group share a tag set and observation scope, so
             # they MUST run serially. Stop early if the op was cancelled mid-group.
+            # One semantic-dedup cache per group: its batches run serially (no race) and
+            # share a scope, so a create can dedup against earlier same-run creates.
+            group_dedup_cache: list[_RunObs] = []
             deltas: list[_BatchDeltas] = []
             for b, n in group_batches:
-                d = await _process_one_llm_batch(b, n)
+                d = await _process_one_llm_batch(b, n, group_dedup_cache)
                 deltas.append(d)
                 if d.cancelled:
                     break
@@ -1033,6 +1168,7 @@ async def _process_memory_batch(
     perf: ConsolidationPerfLog | None = None,
     config: Any = None,
     obs_tags_override: list[str] | None = None,
+    dedup_cache: "list[_RunObs] | None" = None,
 ) -> tuple[list[dict[str, Any]], int, bool]:
     """
     Process a batch of memories in a single LLM call.
@@ -1190,6 +1326,23 @@ async def _process_memory_batch(
     # response (the model occasionally UPDATEs the twin to text X and also CREATEs X).
     update_texts = {_norm_obs_text(u.text) for u in llm_result.updates if u.text}
 
+    # Semantic dedup (create-time): when enabled, a CREATE that is >= the threshold cosine to an
+    # existing observation is reconciled by a focused 1-by-1 LLM merge (anchored on the
+    # observation text, not the source fact). Catches the weak-model failure mode where the
+    # consolidation LLM emits a near-duplicate despite the twin being in context. The trace
+    # operation/scope is "consolidation_dedup" (routes through the consolidation concurrency
+    # bucket via llm_wrapper's "consolidation" prefix; recorded distinctly in llm_requests).
+    dedup_enabled = config is not None and getattr(config, "consolidation_dedup_threshold", 1.0) < 1.0
+    dedup_llm_config = (
+        memory_engine._consolidation_llm_config.with_config(config, bank_id=bank_id, operation="consolidation_dedup")
+        if dedup_enabled
+        else None
+    )
+    # Run-scoped (per tag group) in-memory cache of observations created this run, so a later
+    # create can dedup against an earlier same-run one (the DB probe misses same-run rows).
+    # Falls back to a batch-local list if the caller didn't thread one through.
+    run_cache = (dedup_cache if dedup_cache is not None else []) if dedup_enabled else None
+
     for create in llm_result.creates:
         source_mems = [mem_by_id[fid] for fid in create.source_fact_ids if fid in mem_by_id]
         if not source_mems:
@@ -1212,7 +1365,37 @@ async def _process_memory_batch(
             )
             continue
 
-        await _execute_create_action(
+        # Semantic near-duplicate reconciliation: merge this CREATE into an existing
+        # near-identical observation (LLM-adjudicated, 1-by-1) instead of inserting a dup.
+        # Embed once here and reuse for both the probe and the run cache.
+        create_emb: list[float] | None = None
+        if dedup_enabled:
+            embs = await embedding_utils.generate_embeddings_batch(memory_engine.embeddings, [create.text])
+            create_emb = embs[0] if embs else None
+            if create_emb is not None:
+                merged_into = await _dedup_reconcile_create(
+                    conn,
+                    memory_engine,
+                    bank_id,
+                    config,
+                    dedup_llm_config,
+                    create.text,
+                    create_emb,
+                    create_source_ids,
+                    agg.tags,
+                    run_cache,
+                )
+                if merged_into is not None:
+                    logger.info(
+                        "[CONSOLIDATION] dedup-merged observation CREATE into %s (cosine>=%.2f)",
+                        merged_into[:8],
+                        config.consolidation_dedup_threshold,
+                    )
+                    for m in source_mems:
+                        per_memory_created.add(str(m["id"]))
+                    continue
+
+        new_obs_id = await _execute_create_action(
             conn=conn,
             memory_engine=memory_engine,
             bank_id=bank_id,
@@ -1225,6 +1408,8 @@ async def _process_memory_batch(
             mentioned_at=agg.mentioned_at,
             perf=perf,
         )
+        if run_cache is not None and new_obs_id and create_emb is not None:
+            run_cache.append(_RunObs(id=new_obs_id, text=create.text, embedding=create_emb))
         for m in source_mems:
             per_memory_created.add(str(m["id"]))
 
@@ -1385,9 +1570,10 @@ async def _execute_create_action(
     occurred_end: datetime | None = None,
     mentioned_at: datetime | None = None,
     perf: ConsolidationPerfLog | None = None,
-) -> None:
+) -> str | None:
     """
-    Create a new observation from one or more source memories.
+    Create a new observation from one or more source memories. Returns the new
+    observation's id (or None if the create was skipped, e.g. sources deleted).
 
     Tags are inherited from the source facts (determined algorithmically, not by LLM)
     to maintain visibility scope.
@@ -1410,6 +1596,7 @@ async def _execute_create_action(
     if new_id:
         record_created_memory_ids([new_id])
     logger.debug(f"Created observation from {len(source_memory_ids)} source memories")
+    return str(new_id) if new_id else None
 
 
 async def _execute_delete_action(

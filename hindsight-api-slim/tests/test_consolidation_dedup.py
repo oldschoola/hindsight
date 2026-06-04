@@ -5,9 +5,19 @@ guard the fix in CI — unlike the real-LLM integration test, which only trigger
 the path stochastically.
 """
 
+import types
+import uuid
 from dataclasses import dataclass
+from unittest.mock import AsyncMock, patch
 
-from hindsight_api.engine.consolidation.consolidator import _duplicate_create_target, _norm_obs_text
+from hindsight_api.engine.consolidation.consolidator import (
+    _dedup_reconcile_create,
+    _DedupDecision,
+    _duplicate_create_target,
+    _norm_obs_text,
+    _RunObs,
+)
+from hindsight_api.engine.search.types import RetrievalResult
 
 
 @dataclass
@@ -51,3 +61,101 @@ def test_novel_create_is_not_duplicate() -> None:
     shown = _shown(_FakeObs(id="22222222-bbbb", text="User waters the herbs early in the morning."))
     assert _duplicate_create_target("Rosemary is drought-tolerant.", shown, set()) is None
     assert _duplicate_create_target("", {}, set()) is None
+
+
+# ── semantic dedup (_dedup_reconcile_create) ──────────────────────────────────
+#
+# Mocks the obs-anchored ANN probe and the LLM so the decision logic is tested without
+# a DB or a real model. The embedding is passed in (the caller embeds once).
+
+_TWIN_ID = "33333333-3333-4333-8333-333333333333"
+_EMB = [0.1, 0.2, 0.3]
+
+
+def _obs(text: str, sim: float, oid: str = _TWIN_ID) -> RetrievalResult:
+    return RetrievalResult(id=oid, text=text, fact_type="observation", similarity=sim)
+
+
+def _ctx(threshold: float = 0.97, run_cache=None):
+    """Return (kwargs, conn_mock, llm_mock) for a _dedup_reconcile_create call."""
+    conn = AsyncMock()
+    llm = types.SimpleNamespace(call=AsyncMock())
+    kwargs = dict(
+        conn=conn,
+        memory_engine=types.SimpleNamespace(embeddings=object()),
+        bank_id="bank1",
+        config=types.SimpleNamespace(consolidation_dedup_threshold=threshold),
+        dedup_llm_config=llm,
+        create_text="YouTube content in Uzbek is very rich.",
+        create_embedding=_EMB,
+        create_source_ids=[uuid.uuid4()],
+        tags=["t1"],
+        run_cache=run_cache,
+    )
+    return kwargs, conn, llm
+
+
+def _patch_probe(results):
+    return patch(
+        "hindsight_api.engine.search.retrieval.retrieve_semantic_bm25_combined",
+        AsyncMock(return_value={"observation": (results, [])}),
+    )
+
+
+async def test_dedup_no_twin_above_threshold_returns_none() -> None:
+    kwargs, conn, llm = _ctx(threshold=0.97)
+    with _patch_probe([_obs("something loosely related", 0.81)]):
+        result = await _dedup_reconcile_create(**kwargs)
+    assert result is None
+    llm.call.assert_not_called()  # below threshold → no LLM call
+    conn.execute.assert_not_called()  # no merge
+
+
+async def test_dedup_llm_keep_does_not_merge() -> None:
+    kwargs, conn, llm = _ctx()
+    llm.call.return_value = _DedupDecision(action="keep", reason="different language")
+    with _patch_probe([_obs("Uzbek content on YouTube is described as very rich.", 0.98)]):
+        result = await _dedup_reconcile_create(**kwargs)
+    assert result is None
+    llm.call.assert_awaited_once()
+    conn.execute.assert_not_called()  # kept distinct → no merge
+
+
+async def test_dedup_llm_merge_folds_into_twin() -> None:
+    kwargs, conn, llm = _ctx()
+    kwargs["create_source_ids"] = [uuid.uuid4(), uuid.uuid4()]
+    llm.call.return_value = _DedupDecision(action="merge", text="Uzbek content on YouTube is very rich.")
+    with _patch_probe([_obs("Uzbek content on YouTube is described as very rich.", 0.99)]):
+        result = await _dedup_reconcile_create(**kwargs)
+    assert result == _TWIN_ID  # merged into the twin; caller skips the CREATE
+    conn.execute.assert_awaited_once()
+    args = conn.execute.await_args.args
+    assert args[1] == "Uzbek content on YouTube is very rich."  # merged text persisted
+    assert args[2] == kwargs["create_source_ids"]  # new source facts folded in
+    assert args[3] == uuid.UUID(_TWIN_ID)  # onto the twin row
+
+
+async def test_dedup_picks_highest_above_threshold_skips_below() -> None:
+    # Only the >=threshold candidate is considered; a 0.95 result is ignored at threshold 0.97.
+    kwargs, conn, llm = _ctx(threshold=0.97)
+    llm.call.return_value = _DedupDecision(action="keep")
+    with _patch_probe([_obs("near but distinct", 0.95), _obs("the real twin", 0.98)]):
+        await _dedup_reconcile_create(**kwargs)
+    # the twin passed to the LLM is the >=0.97 one, not the 0.95
+    sent = llm.call.await_args.kwargs["messages"][0]["content"]
+    assert "the real twin" in sent
+    assert "near but distinct" not in sent
+
+
+async def test_dedup_finds_twin_in_run_cache_when_db_misses() -> None:
+    # The DB probe returns nothing (same-run rows aren't visible to the ANN index), but the
+    # in-memory run cache holds an earlier same-run create with an identical embedding.
+    cache_id = "44444444-4444-4444-8444-444444444444"
+    run_cache = [_RunObs(id=cache_id, text="Uzbek content on YouTube is rich.", embedding=_EMB)]
+    kwargs, conn, llm = _ctx(run_cache=run_cache)
+    llm.call.return_value = _DedupDecision(action="merge", text="Uzbek content on YouTube is rich.")
+    with _patch_probe([]):  # DB finds nothing
+        result = await _dedup_reconcile_create(**kwargs)
+    assert result == cache_id  # twin came from the run cache
+    conn.execute.assert_awaited_once()
+    assert conn.execute.await_args.args[3] == uuid.UUID(cache_id)
