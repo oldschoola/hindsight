@@ -387,7 +387,6 @@ class OracleOps(DataAccessOps):
                             FROM {mu_table} mu
                             WHERE mu.bank_id = $4
                               AND mu.fact_type = $3
-                              AND mu.state = 'valid'
                               AND mu.event_date <= $2
                               AND mu.id != $6
                             ORDER BY mu.event_date DESC
@@ -401,7 +400,6 @@ class OracleOps(DataAccessOps):
                             FROM {mu_table} mu
                             WHERE mu.bank_id = $4
                               AND mu.fact_type = $3
-                              AND mu.state = 'valid'
                               AND mu.event_date > $2
                               AND mu.id != $6
                             ORDER BY mu.event_date ASC
@@ -456,7 +454,6 @@ class OracleOps(DataAccessOps):
                 FROM entity_scores es
                 JOIN {mu_table} mu ON mu.id = es.unit_id
                 WHERE mu.fact_type = $2
-                  AND mu.state = 'valid'
                 ORDER BY es.score DESC
                 FETCH FIRST $3 ROWS ONLY
             )"""
@@ -478,7 +475,6 @@ class OracleOps(DataAccessOps):
                     WHERE ml.from_unit_id = ANY($1::uuid[])
                       AND ml.link_type = 'semantic'
                       AND mu.fact_type = $2
-                      AND mu.state = 'valid'
                       AND mu.id != ALL($1::uuid[])
                     UNION ALL
                     SELECT mu.id, ml.weight
@@ -487,7 +483,6 @@ class OracleOps(DataAccessOps):
                     WHERE ml.to_unit_id = ANY($1::uuid[])
                       AND ml.link_type = 'semantic'
                       AND mu.fact_type = $2
-                      AND mu.state = 'valid'
                       AND mu.id != ALL($1::uuid[])
                 ) sem_raw
                 GROUP BY id
@@ -515,7 +510,6 @@ class OracleOps(DataAccessOps):
                 WHERE ml.from_unit_id = ANY($1::uuid[])
                   AND ml.link_type IN ('causes', 'caused_by', 'enables', 'prevents')
                   AND mu.fact_type = $2
-                  AND mu.state = 'valid'
             ),
             causal_expanded AS (
                 SELECT id, text, context, event_date, occurred_start, occurred_end, mentioned_at,

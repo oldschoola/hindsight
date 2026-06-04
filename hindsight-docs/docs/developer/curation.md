@@ -4,7 +4,7 @@ sidebar_position: 6
 
 # Curation: Editing, Invalidating & Pruning Memories
 
-Memory is append-only by design — but sometimes a stored fact is **wrong**, has gone **stale**, or is a **duplicate**. Curation lets you correct or retire individual memories without losing the audit trail, and reclaim storage when you're ready.
+Memory is append-only by design — but sometimes a stored fact is **wrong**, has gone **stale**, or is a **duplicate**. Curation lets you correct or retire individual memories without losing the audit trail. Retired facts are moved out of the active set, so recall never returns them, while remaining fully recoverable.
 
 ## When to reach for what
 

@@ -102,9 +102,6 @@ class MemoryUnit(Base):
     occurred_end: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))  # When fact occurred (range end)
     mentioned_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))  # When fact was mentioned
     fact_type: Mapped[str] = mapped_column(Text, nullable=False, server_default="world")
-    state: Mapped[str] = mapped_column(Text, nullable=False, server_default="valid")  # 'valid' | 'invalidated'
-    invalidation_reason: Mapped[str | None] = mapped_column(Text)  # optional reason recorded on invalidate
-    invalidated_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))  # when invalidated (NULL = valid)
     unit_metadata: Mapped[dict] = mapped_column(
         "metadata", JSONB, server_default=sql_text("'{}'::jsonb")
     )  # User-defined metadata (str->str)
@@ -129,14 +126,7 @@ class MemoryUnit(Base):
             ondelete="CASCADE",
         ),
         CheckConstraint("fact_type IN ('world', 'experience', 'observation')"),
-        CheckConstraint("state IN ('valid', 'invalidated')", name="chk_memory_units_state"),
         Index("idx_memory_units_bank_id", "bank_id"),
-        Index(
-            "idx_memory_units_active",
-            "bank_id",
-            "fact_type",
-            postgresql_where=sql_text("state = 'valid'"),
-        ),
         Index("idx_memory_units_document_id", "document_id"),
         Index("idx_memory_units_event_date", "event_date", postgresql_ops={"event_date": "DESC"}),
         Index("idx_memory_units_bank_date", "bank_id", "event_date", postgresql_ops={"event_date": "DESC"}),

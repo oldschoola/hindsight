@@ -5238,6 +5238,12 @@ class MemoryEngine(MemoryEngineInterface):
                             bank_id,
                             fact_type,
                         )
+                        # Curation archive holds invalidated facts of the same types.
+                        await conn.execute(
+                            f"DELETE FROM {fq_table('invalidated_memory_units')} WHERE bank_id = $1 AND fact_type = $2",
+                            bank_id,
+                            fact_type,
+                        )
 
                         if unit_ids:
                             invalidated_obs = await self._delete_stale_observations_for_memories(
@@ -5264,6 +5270,12 @@ class MemoryEngine(MemoryEngineInterface):
 
                         # Delete memory units (cascades to unit_entities, memory_links)
                         await conn.execute(f"DELETE FROM {fq_table('memory_units')} WHERE bank_id = $1", bank_id)
+
+                        # Curation archive (rows with NULL document_id aren't covered by
+                        # the documents cascade, so clear by bank explicitly).
+                        await conn.execute(
+                            f"DELETE FROM {fq_table('invalidated_memory_units')} WHERE bank_id = $1", bank_id
+                        )
 
                         # Delete entities (cascades to unit_entities, entity_cooccurrences, memory_links with entity_id)
                         await conn.execute(f"DELETE FROM {fq_table('entities')} WHERE bank_id = $1", bank_id)
@@ -5497,6 +5509,21 @@ class MemoryEngine(MemoryEngineInterface):
         embeddings = await embedding_processing.generate_embeddings_batch(self.embeddings, augmented)
         return str(embeddings[0]) if embeddings else None
 
+    async def _memory_unit_columns(self, conn) -> str:
+        """Comma-joined, quoted ordinal column list of ``memory_units``.
+
+        Used to move a row verbatim between ``memory_units`` and the curation
+        archive (``invalidated_memory_units``) without hardcoding the
+        migration-evolving column set — the archive is created via
+        ``LIKE memory_units`` so the lists line up.
+        """
+        rows = await conn.fetch(
+            f"SELECT a.attname FROM pg_attribute a "
+            f"WHERE a.attrelid = '{fq_table('memory_units')}'::regclass "
+            f"AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum"
+        )
+        return ", ".join(f'"{r["attname"]}"' for r in rows)
+
     async def update_memory_unit(
         self,
         bank_id: str,
@@ -5509,17 +5536,19 @@ class MemoryEngine(MemoryEngineInterface):
     ) -> dict[str, Any] | None:
         """Curate a single raw memory unit: edit its text and/or change its state.
 
-        Two reversible curation operations, both reusing the delete cascade so
-        derived observations and links stay consistent:
+        Invalidation keeps the recall hot-path clean by *moving* the row between
+        tables rather than flagging it: live facts live in ``memory_units``,
+        invalidated ones in ``invalidated_memory_units``. Recall/consolidation/
+        graph queries therefore need no state predicate.
 
         - **Edit** (``text``): replace the fact text, re-embed, drop derived
           observations + links, and re-consolidate. The prior text is appended to
-          the unit's ``history`` for auditability.
-        - **Invalidate** (``state='invalidated'``): exclude the row from recall,
-          consolidation, and graph maintenance while keeping it for audit. Prunes
-          its links and re-derives its dependent observations, and drops the
-          embedding to reclaim storage (recomputed on revert).
-        - **Revert** (``state='valid'``): re-embed and re-consolidate.
+          the unit's ``history``.
+        - **Invalidate** (``state='invalidated'``): move the row to the archive
+          (cascade-pruning its links/entity associations and re-deriving dependent
+          observations). The embedding + an entity-id snapshot travel with it.
+        - **Revert** (``state='valid'``): move the row back, restore its entity
+          associations, and re-consolidate.
 
         Only ``world``/``experience`` facts can be curated — observations are
         derived and regenerate from their sources. Returns the updated memory
@@ -5544,159 +5573,155 @@ class MemoryEngine(MemoryEngineInterface):
         backend = await self._get_backend()
         from .graph_maintenance import enqueue_relink_victims
 
+        mu = fq_table("memory_units")
+        arch = fq_table("invalidated_memory_units")
+        ue = fq_table("unit_entities")
+        ml = fq_table("memory_links")
+        ent = fq_table("entities")
+
         need_consolidation = False
         need_graph = False
         found = False
 
         async with acquire_with_retry(backend) as conn:
             async with conn.transaction():
-                row = await conn.fetchrow(
-                    f"""
-                    SELECT text, fact_type, state, occurred_start, occurred_end, mentioned_at
-                    FROM {fq_table("memory_units")}
-                    WHERE id = $1 AND bank_id = $2
-                    """,
+                live = await conn.fetchrow(
+                    f"SELECT text, fact_type, occurred_start, occurred_end, mentioned_at "
+                    f"FROM {mu} WHERE id = $1 AND bank_id = $2",
                     str(memory_uuid),
                     bank_id,
                 )
-                if not row:
+                archived = None
+                if not live:
+                    archived = await conn.fetchrow(
+                        f"SELECT fact_type FROM {arch} WHERE id = $1 AND bank_id = $2",
+                        str(memory_uuid),
+                        bank_id,
+                    )
+                record = live or archived
+                if record is None:
                     return None
                 found = True
-                fact_type = row["fact_type"]
-                cur_state = row["state"]
-                cur_text = row["text"]
-
+                fact_type = record["fact_type"]
                 if fact_type not in ("experience", "world"):
                     raise ValueError(
                         f"Memory '{memory_id}' is a {fact_type}; only world/experience facts can be curated. "
                         "Observations are derived and regenerate from their sources."
                     )
 
-                # Resolve entity names once for any re-embedding below.
-                async def _entity_names() -> list[str]:
-                    ent_rows = await conn.fetch(
-                        f"""
-                        SELECT e.canonical_name
-                        FROM {fq_table("unit_entities")} ue
-                        JOIN {fq_table("entities")} e ON ue.entity_id = e.id
-                        WHERE ue.unit_id = $1
-                        """,
-                        str(memory_uuid),
-                    )
-                    return [r["canonical_name"] for r in ent_rows]
+                collist = await self._memory_unit_columns(conn)
 
-                doing_edit = text is not None and text != cur_text
-                target_state = state if state is not None else cur_state
-
-                # --- Edit text ---
-                if doing_edit:
-                    if cur_state != "valid":
+                # --- Edit text (live rows only) ---
+                if text is not None:
+                    if not live:
                         raise ValueError("Cannot edit an invalidated memory; revert it to 'valid' first.")
-                    new_emb = await self._reembed_memory_text(
-                        text=text,
-                        occurred_start=row["occurred_start"],
-                        occurred_end=row["occurred_end"],
-                        mentioned_at=row["mentioned_at"],
-                        entities=await _entity_names(),
-                    )
-                    edit_entry = json.dumps(
-                        [{"previous_text": cur_text, "edited_at": datetime.now(UTC).isoformat(), "reason": reason}]
-                    )
-                    await enqueue_relink_victims(conn, bank_id, [memory_id], ops=backend.ops)
-                    await conn.execute(
-                        f"""
-                        UPDATE {fq_table("memory_units")}
-                        SET text = $3,
-                            embedding = $4::vector,
-                            consolidated_at = NULL,
-                            consolidation_failed_at = NULL,
-                            history = COALESCE(history, '[]'::jsonb) || $5::jsonb,
-                            updated_at = now()
-                        WHERE id = $1 AND bank_id = $2
-                        """,
-                        str(memory_uuid),
-                        bank_id,
-                        text,
-                        new_emb,
-                        edit_entry,
-                    )
-                    await conn.execute(
-                        f"DELETE FROM {fq_table('memory_links')} WHERE from_unit_id = $1 OR to_unit_id = $1",
-                        str(memory_uuid),
-                    )
-                    await self._delete_stale_observations_for_memories(conn, bank_id, [memory_id])
-                    cur_text = text
-                    need_consolidation = True
-                    need_graph = True
-
-                # --- State transition ---
-                if target_state != cur_state:
-                    if target_state == "invalidated":
+                    if text != live["text"]:
+                        ent_rows = await conn.fetch(
+                            f"SELECT e.canonical_name FROM {ue} ue JOIN {ent} e ON ue.entity_id = e.id "
+                            f"WHERE ue.unit_id = $1",
+                            str(memory_uuid),
+                        )
+                        new_emb = await self._reembed_memory_text(
+                            text=text,
+                            occurred_start=live["occurred_start"],
+                            occurred_end=live["occurred_end"],
+                            mentioned_at=live["mentioned_at"],
+                            entities=[r["canonical_name"] for r in ent_rows],
+                        )
+                        edit_entry = json.dumps(
+                            [
+                                {
+                                    "previous_text": live["text"],
+                                    "edited_at": datetime.now(UTC).isoformat(),
+                                    "reason": reason,
+                                }
+                            ]
+                        )
                         await enqueue_relink_victims(conn, bank_id, [memory_id], ops=backend.ops)
                         await conn.execute(
                             f"""
-                            UPDATE {fq_table("memory_units")}
-                            SET state = 'invalidated',
-                                invalidated_at = now(),
-                                invalidation_reason = $3,
-                                embedding = NULL,
-                                updated_at = now()
+                            UPDATE {mu}
+                            SET text = $3, embedding = $4::vector, consolidated_at = NULL,
+                                consolidation_failed_at = NULL,
+                                history = COALESCE(history, '[]'::jsonb) || $5::jsonb, updated_at = now()
                             WHERE id = $1 AND bank_id = $2
                             """,
                             str(memory_uuid),
                             bank_id,
-                            reason,
+                            text,
+                            new_emb,
+                            edit_entry,
                         )
                         await conn.execute(
-                            f"DELETE FROM {fq_table('memory_links')} WHERE from_unit_id = $1 OR to_unit_id = $1",
-                            str(memory_uuid),
+                            f"DELETE FROM {ml} WHERE from_unit_id = $1 OR to_unit_id = $1", str(memory_uuid)
                         )
                         await self._delete_stale_observations_for_memories(conn, bank_id, [memory_id])
                         need_consolidation = True
                         need_graph = True
-                    else:  # revert to valid
-                        new_emb = await self._reembed_memory_text(
-                            text=cur_text,
-                            occurred_start=row["occurred_start"],
-                            occurred_end=row["occurred_end"],
-                            mentioned_at=row["mentioned_at"],
-                            entities=await _entity_names(),
-                        )
-                        await conn.execute(
-                            f"""
-                            UPDATE {fq_table("memory_units")}
-                            SET state = 'valid',
-                                invalidated_at = NULL,
-                                invalidation_reason = NULL,
-                                embedding = $3::vector,
-                                consolidated_at = NULL,
-                                consolidation_failed_at = NULL,
-                                updated_at = now()
-                            WHERE id = $1 AND bank_id = $2
-                            """,
-                            str(memory_uuid),
-                            bank_id,
-                            new_emb,
-                        )
-                        need_consolidation = True
-                        need_graph = True
-                elif (
-                    target_state == "invalidated"
-                    and reason is not None
-                    and not doing_edit
-                    and cur_state == "invalidated"
-                ):
-                    # Already invalidated — just update the recorded reason.
+
+                # --- Invalidate: move live → archive ---
+                if state == "invalidated" and live:
+                    entity_ids = [
+                        r["entity_id"]
+                        for r in await conn.fetch(f"SELECT entity_id FROM {ue} WHERE unit_id = $1", str(memory_uuid))
+                    ]
+                    # Capture relink victims BEFORE the row (and its links) disappear.
+                    await enqueue_relink_victims(conn, bank_id, [memory_id], ops=backend.ops)
                     await conn.execute(
-                        f"""
-                        UPDATE {fq_table("memory_units")}
-                        SET invalidation_reason = $3, updated_at = now()
-                        WHERE id = $1 AND bank_id = $2
-                        """,
+                        f"INSERT INTO {arch} ({collist}, invalidation_reason, invalidated_at, entity_ids) "
+                        f"SELECT {collist}, $2, now(), $3::uuid[] FROM {mu} WHERE id = $1 AND bank_id = $4",
+                        str(memory_uuid),
+                        reason,
+                        entity_ids,
+                        bank_id,
+                    )
+                    # Cascade prunes unit_entities + memory_links; sweep runs after
+                    # the delete so it also catches a racing observation insert.
+                    await conn.execute(f"DELETE FROM {mu} WHERE id = $1 AND bank_id = $2", str(memory_uuid), bank_id)
+                    await self._delete_stale_observations_for_memories(conn, bank_id, [memory_id])
+                    need_consolidation = True
+                    need_graph = True
+                elif state == "invalidated" and archived and reason is not None:
+                    # Already archived — just update the recorded reason.
+                    await conn.execute(
+                        f"UPDATE {arch} SET invalidation_reason = $3 WHERE id = $1 AND bank_id = $2",
                         str(memory_uuid),
                         bank_id,
                         reason,
                     )
+
+                # --- Revert: move archive → live ---
+                elif state == "valid" and archived:
+                    arch_row = await conn.fetchrow(
+                        f"SELECT entity_ids FROM {arch} WHERE id = $1 AND bank_id = $2", str(memory_uuid), bank_id
+                    )
+                    await conn.execute(
+                        f"INSERT INTO {mu} ({collist}) SELECT {collist} FROM {arch} WHERE id = $1 AND bank_id = $2",
+                        str(memory_uuid),
+                        bank_id,
+                    )
+                    # Re-consolidate from scratch; links are rebuilt by graph maintenance.
+                    await conn.execute(
+                        f"UPDATE {mu} SET consolidated_at = NULL, consolidation_failed_at = NULL, updated_at = now() "
+                        f"WHERE id = $1 AND bank_id = $2",
+                        str(memory_uuid),
+                        bank_id,
+                    )
+                    # Restore entity associations for entities that still exist (some may
+                    # have been pruned as orphans after the original move).
+                    if arch_row and arch_row["entity_ids"]:
+                        await conn.execute(
+                            f"INSERT INTO {ue} (unit_id, entity_id) "
+                            f"SELECT $1, eid FROM unnest($2::uuid[]) AS eid "
+                            f"WHERE EXISTS (SELECT 1 FROM {ent} e WHERE e.id = eid AND e.bank_id = $3) "
+                            f"ON CONFLICT DO NOTHING",
+                            str(memory_uuid),
+                            arch_row["entity_ids"],
+                            bank_id,
+                        )
+                    await conn.execute(f"DELETE FROM {arch} WHERE id = $1 AND bank_id = $2", str(memory_uuid), bank_id)
+                    need_consolidation = True
+                    need_graph = True
 
         if not found:
             return None
@@ -6216,6 +6241,12 @@ class MemoryEngine(MemoryEngineInterface):
 
             ctx = BankReadContext(bank_id=bank_id, operation="list_memory_units", request_context=request_context)
             await self._validate_operation(self._operation_validator.validate_bank_read(ctx))
+        if state is not None and state not in ("valid", "invalidated"):
+            raise ValueError(f"Invalid state '{state}': expected 'valid' or 'invalidated'.")
+        # Invalidated facts live in a separate archive table; pick the source
+        # accordingly. Default (state is None) lists live facts.
+        is_archived = state == "invalidated"
+        source_table = fq_table("invalidated_memory_units") if is_archived else fq_table("memory_units")
         backend = await self._get_backend()
         async with acquire_with_retry(backend) as conn:
             # Build query conditions
@@ -6232,13 +6263,6 @@ class MemoryEngine(MemoryEngineInterface):
                 param_count += 1
                 query_conditions.append(f"fact_type = ${param_count}")
                 query_params.append(fact_type)
-
-            if state:
-                if state not in ("valid", "invalidated"):
-                    raise ValueError(f"Invalid state '{state}': expected 'valid' or 'invalidated'.")
-                param_count += 1
-                query_conditions.append(f"state = ${param_count}")
-                query_params.append(state)
 
             if search_query:
                 # Full-text search on text and context fields using ILIKE
@@ -6269,7 +6293,7 @@ class MemoryEngine(MemoryEngineInterface):
             # Get total count
             count_query = f"""
                 SELECT COUNT(*) as total
-                FROM {fq_table("memory_units")}
+                FROM {source_table}
                 {where_clause}
             """
             count_result = await conn.fetchrow(count_query, *query_params)
@@ -6284,10 +6308,16 @@ class MemoryEngine(MemoryEngineInterface):
             offset_param = f"${param_count}"
             query_params.append(offset)
 
+            # The archive carries invalidation bookkeeping; the live table doesn't.
+            curation_cols = (
+                "invalidation_reason, invalidated_at"
+                if is_archived
+                else "NULL::text AS invalidation_reason, NULL::timestamptz AS invalidated_at"
+            )
             units = await conn.fetch(
                 f"""
-                SELECT id, text, event_date, context, fact_type, mentioned_at, occurred_start, occurred_end, chunk_id, proof_count, tags, consolidated_at, consolidation_failed_at, state, invalidation_reason, invalidated_at
-                FROM {fq_table("memory_units")}
+                SELECT id, text, event_date, context, fact_type, mentioned_at, occurred_start, occurred_end, chunk_id, proof_count, tags, consolidated_at, consolidation_failed_at, {curation_cols}
+                FROM {source_table}
                 {where_clause}
                 ORDER BY mentioned_at DESC NULLS LAST, created_at DESC
                 LIMIT {limit_param} OFFSET {offset_param}
@@ -6344,7 +6374,7 @@ class MemoryEngine(MemoryEngineInterface):
                         "consolidation_failed_at": (
                             row["consolidation_failed_at"].isoformat() if row["consolidation_failed_at"] else None
                         ),
-                        "state": row["state"],
+                        "state": "invalidated" if is_archived else "valid",
                         "invalidation_reason": row["invalidation_reason"],
                         "invalidated_at": row["invalidated_at"].isoformat() if row["invalidated_at"] else None,
                     }
@@ -6384,18 +6414,29 @@ class MemoryEngine(MemoryEngineInterface):
             await self._validate_operation(self._operation_validator.validate_bank_read(ctx))
         backend = await self._get_backend()
         async with acquire_with_retry(backend) as conn:
-            # Get the memory unit (include source_memory_ids for mental models)
+            # Get the memory unit (include source_memory_ids for mental models).
+            # Curation moves invalidated facts to invalidated_memory_units, so fall
+            # back to the archive (with its invalidation bookkeeping) on a miss.
+            select_cols = (
+                "id, text, context, event_date, occurred_start, occurred_end, "
+                "mentioned_at, fact_type, document_id, chunk_id, tags, source_memory_ids, "
+                "observation_scopes"
+            )
             row = await conn.fetchrow(
-                f"""
-                SELECT id, text, context, event_date, occurred_start, occurred_end,
-                       mentioned_at, fact_type, document_id, chunk_id, tags, source_memory_ids,
-                       observation_scopes, state, invalidation_reason, invalidated_at
-                FROM {fq_table("memory_units")}
-                WHERE id = $1 AND bank_id = $2
-                """,
+                f"SELECT {select_cols}, NULL::text AS invalidation_reason, NULL::timestamptz AS invalidated_at "
+                f"FROM {fq_table('memory_units')} WHERE id = $1 AND bank_id = $2",
                 str(memory_uuid),
                 bank_id,
             )
+            unit_state = "valid"
+            if not row:
+                row = await conn.fetchrow(
+                    f"SELECT {select_cols}, invalidation_reason, invalidated_at "
+                    f"FROM {fq_table('invalidated_memory_units')} WHERE id = $1 AND bank_id = $2",
+                    str(memory_uuid),
+                    bank_id,
+                )
+                unit_state = "invalidated"
 
             if not row:
                 return None
@@ -6423,7 +6464,7 @@ class MemoryEngine(MemoryEngineInterface):
                 "chunk_id": str(row["chunk_id"]) if row["chunk_id"] else None,
                 "tags": row["tags"] if row["tags"] else [],
                 "observation_scopes": row["observation_scopes"] if row["observation_scopes"] else None,
-                "state": row["state"],
+                "state": unit_state,
                 "invalidation_reason": row["invalidation_reason"],
                 "invalidated_at": row["invalidated_at"].isoformat() if row["invalidated_at"] else None,
             }

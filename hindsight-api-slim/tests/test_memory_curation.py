@@ -1,18 +1,12 @@
 """Tests for memory curation: edit / invalidate / revert.
 
-Covers the engine-level `update_memory_unit` contract and the recall-exclusion
-guarantee:
-
-1. Invalidate sets state='invalidated', drops the embedding, prunes the memory's
-   links, removes derived observations, and resets surviving sources.
-2. Revert restores state='valid' and recomputes the embedding.
-3. Edit replaces the text, re-embeds, records the previous text in history, and
-   re-derives observations.
-4. Observations cannot be curated directly; invalidated rows cannot be edited.
-5. list_memory_units exposes state/reason and filters by state.
-6. Recall excludes invalidated memories.
+Invalidation MOVES a fact out of ``memory_units`` into the
+``invalidated_memory_units`` archive, so the recall hot-path never sees it.
+These tests cover the move semantics, lossless revert (incl. entity
+associations), edit, the guards, listing, and recall exclusion.
 """
 
+import json
 import uuid
 from unittest.mock import AsyncMock, patch
 
@@ -30,7 +24,7 @@ from hindsight_api.engine.retain import embedding_processing
 async def _insert_memory(
     conn, memory: MemoryEngine, bank_id: str, text: str, fact_type: str = "experience"
 ) -> uuid.UUID:
-    """Insert a memory unit with a real embedding, bypassing the LLM pipeline."""
+    """Insert a live memory unit with a real embedding, bypassing the LLM pipeline."""
     mem_id = uuid.uuid4()
     emb = await embedding_processing.generate_embeddings_batch(memory.embeddings, [text])
     await conn.execute(
@@ -76,14 +70,36 @@ async def _insert_link(conn, bank_id: str, from_id: uuid.UUID, to_id: uuid.UUID)
     )
 
 
-async def _row(conn, mem_id: uuid.UUID) -> dict:
-    return dict(
-        await conn.fetchrow(
-            "SELECT state, invalidation_reason, invalidated_at, embedding, text, consolidated_at, history "
-            "FROM memory_units WHERE id = $1",
-            mem_id,
-        )
+async def _insert_entity(conn, bank_id: str, name: str) -> uuid.UUID:
+    eid = uuid.uuid4()
+    await conn.execute(
+        "INSERT INTO entities (id, bank_id, canonical_name) VALUES ($1, $2, $3)",
+        eid,
+        bank_id,
+        name,
     )
+    return eid
+
+
+async def _link_entity(conn, unit_id: uuid.UUID, entity_id: uuid.UUID) -> None:
+    await conn.execute(
+        "INSERT INTO unit_entities (unit_id, entity_id) VALUES ($1, $2)",
+        unit_id,
+        entity_id,
+    )
+
+
+async def _in_live(conn, mem_id: uuid.UUID) -> bool:
+    return bool(await conn.fetchval("SELECT 1 FROM memory_units WHERE id = $1", mem_id))
+
+
+async def _archive_row(conn, mem_id: uuid.UUID) -> dict | None:
+    row = await conn.fetchrow(
+        "SELECT text, embedding, invalidation_reason, invalidated_at, entity_ids "
+        "FROM invalidated_memory_units WHERE id = $1",
+        mem_id,
+    )
+    return dict(row) if row else None
 
 
 async def _link_count(conn, mem_id: uuid.UUID) -> int:
@@ -91,6 +107,11 @@ async def _link_count(conn, mem_id: uuid.UUID) -> int:
         "SELECT COUNT(*) FROM memory_links WHERE from_unit_id = $1 OR to_unit_id = $1",
         mem_id,
     )
+
+
+async def _entity_ids_for(conn, unit_id: uuid.UUID) -> list[uuid.UUID]:
+    rows = await conn.fetch("SELECT entity_id FROM unit_entities WHERE unit_id = $1", unit_id)
+    return [r["entity_id"] for r in rows]
 
 
 async def _obs_ids(conn, bank_id: str) -> list[str]:
@@ -101,18 +122,22 @@ async def _obs_ids(conn, bank_id: str) -> list[str]:
     return [str(r["id"]) for r in rows]
 
 
+async def _consolidated_at(conn, mem_id: uuid.UUID):
+    return await conn.fetchval("SELECT consolidated_at FROM memory_units WHERE id = $1", mem_id)
+
+
 async def _ensure_bank(memory: MemoryEngine, bank_id: str, request_context: RequestContext) -> None:
     await memory.get_bank_profile(bank_id=bank_id, request_context=request_context)
 
 
 # ---------------------------------------------------------------------------
-# Invalidate
+# Invalidate / revert (table move)
 # ---------------------------------------------------------------------------
 
 
 class TestInvalidate:
     @pytest.mark.asyncio
-    async def test_invalidate_prunes_links_observations_and_drops_embedding(
+    async def test_invalidate_moves_to_archive_and_prunes(
         self, memory: MemoryEngine, request_context: RequestContext
     ):
         bank_id = f"test-curation-inv-{uuid.uuid4().hex[:8]}"
@@ -124,7 +149,6 @@ class TestInvalidate:
             m2 = await _insert_memory(conn, memory, bank_id, "srv-04 is in the eu-west datacenter.")
             obs_id = await _insert_observation(conn, bank_id, "srv-04 runs PG14 in eu-west.", [m1, m2])
             await _insert_link(conn, bank_id, m1, m2)
-            assert await _link_count(conn, m1) == 1
 
         with (
             patch.object(memory, "submit_async_consolidation", new=AsyncMock()),
@@ -140,18 +164,19 @@ class TestInvalidate:
         assert result["invalidated_at"] is not None
 
         async with pool.acquire() as conn:
-            row = await _row(conn, m1)
-            assert row["state"] == "invalidated"
-            assert row["embedding"] is None, "embedding must be dropped on invalidate"
-            assert await _link_count(conn, m1) == 0, "links must be pruned"
-            assert str(obs_id) not in await _obs_ids(conn, bank_id), "derived observation must be removed"
-            # m2 is a surviving source of the deleted observation → reset for re-consolidation
-            assert (await _row(conn, m2))["consolidated_at"] is None
+            assert not await _in_live(conn, m1), "invalidated row must leave memory_units"
+            arch = await _archive_row(conn, m1)
+            assert arch is not None, "row must be in the archive"
+            assert arch["invalidation_reason"] == "decommissioned"
+            assert arch["embedding"] is not None, "embedding travels with the archived row"
+            assert await _link_count(conn, m1) == 0, "links cascade-pruned on move"
+            assert str(obs_id) not in await _obs_ids(conn, bank_id), "derived observation removed"
+            assert await _consolidated_at(conn, m2) is None, "surviving source reset for re-consolidation"
 
         await memory.delete_bank(bank_id, request_context=request_context)
 
     @pytest.mark.asyncio
-    async def test_invalidate_then_revert_restores_state_and_reembeds(
+    async def test_revert_moves_back_and_restores_entities(
         self, memory: MemoryEngine, request_context: RequestContext
     ):
         bank_id = f"test-curation-rev-{uuid.uuid4().hex[:8]}"
@@ -160,6 +185,8 @@ class TestInvalidate:
         pool = await memory._get_pool()
         async with pool.acquire() as conn:
             m1 = await _insert_memory(conn, memory, bank_id, "Alice prefers tea over coffee.")
+            e1 = await _insert_entity(conn, bank_id, "Alice")
+            await _link_entity(conn, m1, e1)
 
         with (
             patch.object(memory, "submit_async_consolidation", new=AsyncMock()),
@@ -167,26 +194,25 @@ class TestInvalidate:
         ):
             await memory.update_memory_unit(bank_id, str(m1), state="invalidated", request_context=request_context)
             async with pool.acquire() as conn:
-                assert (await _row(conn, m1))["embedding"] is None
+                assert not await _in_live(conn, m1)
+                arch = await _archive_row(conn, m1)
+                assert arch is not None and e1 in (arch["entity_ids"] or []), "entity ids snapshotted on invalidate"
+                assert await _entity_ids_for(conn, m1) == [], "unit_entities cascade-pruned on move"
 
-            result = await memory.update_memory_unit(
-                bank_id, str(m1), state="valid", request_context=request_context
-            )
+            result = await memory.update_memory_unit(bank_id, str(m1), state="valid", request_context=request_context)
 
         assert result["state"] == "valid"
         assert result["invalidation_reason"] is None
-        assert result["invalidated_at"] is None
         async with pool.acquire() as conn:
-            row = await _row(conn, m1)
-            assert row["embedding"] is not None, "embedding must be recomputed on revert"
-            assert row["consolidated_at"] is None, "reverted memory must be re-consolidated"
+            assert await _in_live(conn, m1), "reverted row back in memory_units"
+            assert await _archive_row(conn, m1) is None, "archive row removed on revert"
+            assert await _consolidated_at(conn, m1) is None, "reverted memory re-consolidates"
+            assert e1 in await _entity_ids_for(conn, m1), "entity associations restored on revert"
 
         await memory.delete_bank(bank_id, request_context=request_context)
 
     @pytest.mark.asyncio
-    async def test_invalidate_is_idempotent_and_updates_reason(
-        self, memory: MemoryEngine, request_context: RequestContext
-    ):
+    async def test_invalidate_idempotent_updates_reason(self, memory: MemoryEngine, request_context: RequestContext):
         bank_id = f"test-curation-idem-{uuid.uuid4().hex[:8]}"
         await _ensure_bank(memory, bank_id, request_context)
 
@@ -207,6 +233,9 @@ class TestInvalidate:
 
         assert result["state"] == "invalidated"
         assert result["invalidation_reason"] == "second"
+        async with pool.acquire() as conn:
+            assert not await _in_live(conn, m1)
+            assert (await _archive_row(conn, m1))["invalidation_reason"] == "second"
         await memory.delete_bank(bank_id, request_context=request_context)
 
 
@@ -243,16 +272,16 @@ class TestEdit:
         assert result["text"] == "The user visited Paris in 2023."
         assert result["state"] == "valid"
         async with pool.acquire() as conn:
-            row = await _row(conn, m1)
+            assert await _in_live(conn, m1), "edited row stays live"
+            row = dict(
+                await conn.fetchrow("SELECT text, consolidated_at, history FROM memory_units WHERE id = $1", m1)
+            )
             assert row["text"] == "The user visited Paris in 2023."
-            assert row["embedding"] is not None
             assert row["consolidated_at"] is None
             history = row["history"]
-            import json
-
             history = json.loads(history) if isinstance(history, str) else history
             assert any(h.get("previous_text") == "The assistant visited Paris in 2023." for h in history)
-            assert str(obs_id) not in await _obs_ids(conn, bank_id), "stale observation must be re-derived"
+            assert str(obs_id) not in await _obs_ids(conn, bank_id), "stale observation re-derived"
 
         await memory.delete_bank(bank_id, request_context=request_context)
 
@@ -271,9 +300,7 @@ class TestEdit:
         ):
             await memory.update_memory_unit(bank_id, str(m1), state="invalidated", request_context=request_context)
             with pytest.raises(ValueError, match="revert"):
-                await memory.update_memory_unit(
-                    bank_id, str(m1), text="corrected", request_context=request_context
-                )
+                await memory.update_memory_unit(bank_id, str(m1), text="corrected", request_context=request_context)
 
         await memory.delete_bank(bank_id, request_context=request_context)
 
@@ -310,13 +337,13 @@ class TestGuardsAndListing:
         await memory.delete_bank(bank_id, request_context=request_context)
 
     @pytest.mark.asyncio
-    async def test_list_exposes_state_and_filters(self, memory: MemoryEngine, request_context: RequestContext):
+    async def test_list_filters_by_state(self, memory: MemoryEngine, request_context: RequestContext):
         bank_id = f"test-curation-list-{uuid.uuid4().hex[:8]}"
         await _ensure_bank(memory, bank_id, request_context)
 
         pool = await memory._get_pool()
         async with pool.acquire() as conn:
-            await _insert_memory(conn, memory, bank_id, "Valid fact one.")
+            keep = await _insert_memory(conn, memory, bank_id, "Valid fact one.")
             m2 = await _insert_memory(conn, memory, bank_id, "Fact to retire.")
 
         with (
@@ -327,16 +354,20 @@ class TestGuardsAndListing:
                 bank_id, str(m2), state="invalidated", reason="dup", request_context=request_context
             )
 
-        # Default listing includes both, with a state field.
-        all_items = (await memory.list_memory_units(bank_id, request_context=request_context))["items"]
-        assert {i["state"] for i in all_items} == {"valid", "invalidated"}
+        # Default lists live facts only.
+        live = (await memory.list_memory_units(bank_id, request_context=request_context))["items"]
+        live_ids = {i["id"] for i in live}
+        assert str(keep) in live_ids and str(m2) not in live_ids
+        assert all(i["state"] == "valid" for i in live)
 
-        invalid_only = (
-            await memory.list_memory_units(bank_id, state="invalidated", request_context=request_context)
-        )["items"]
-        assert len(invalid_only) == 1
-        assert invalid_only[0]["id"] == str(m2)
-        assert invalid_only[0]["invalidation_reason"] == "dup"
+        # state=invalidated reads the archive.
+        invalid = (await memory.list_memory_units(bank_id, state="invalidated", request_context=request_context))[
+            "items"
+        ]
+        assert len(invalid) == 1
+        assert invalid[0]["id"] == str(m2)
+        assert invalid[0]["state"] == "invalidated"
+        assert invalid[0]["invalidation_reason"] == "dup"
 
         await memory.delete_bank(bank_id, request_context=request_context)
 
@@ -373,4 +404,3 @@ class TestGuardsAndListing:
         assert not _hit(after), "invalidated fact must be excluded from recall"
 
         await memory.delete_bank(bank_id, request_context=request_context)
-

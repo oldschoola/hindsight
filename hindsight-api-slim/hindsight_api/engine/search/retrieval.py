@@ -392,7 +392,6 @@ async def retrieve_temporal_combined(
             FROM {fq_table("memory_units")}
             WHERE bank_id = $2
               AND fact_type = ANY($3)
-              AND state = 'valid'
               AND embedding IS NOT NULL
               AND (
                   (occurred_start IS NOT NULL AND occurred_end IS NOT NULL
@@ -533,7 +532,6 @@ async def retrieve_temporal_combined(
                 JOIN {fq_table("memory_units")} mu ON mu.id = l.to_unit_id
                 WHERE mu.bank_id = $6
                   AND mu.fact_type = $3
-                  AND mu.state = 'valid'
                   AND mu.embedding IS NOT NULL
                   AND (1 - (mu.embedding <=> $1::vector)) >= $4
                   {spreading_tags_clause}

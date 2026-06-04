@@ -489,7 +489,6 @@ async def _run_consolidation_job(
               AND consolidated_at IS NULL
               AND consolidation_failed_at IS NULL
               AND fact_type IN ('experience', 'world')
-              AND state = 'valid'
               {scope_clause}
             """,
             *scope_params,
@@ -547,7 +546,6 @@ async def _run_consolidation_job(
                   AND consolidated_at IS NULL
                   AND consolidation_failed_at IS NULL
                   AND fact_type IN ('experience', 'world')
-                  AND state = 'valid'
                   {scope_clause}
                 ORDER BY created_at ASC
                 LIMIT ${limit_idx}

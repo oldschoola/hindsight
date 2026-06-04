@@ -251,7 +251,6 @@ async def _relink_batch(
         WHERE id = ANY($1::uuid[])
           AND bank_id = $2
           AND fact_type IN ('experience', 'world')
-          AND state = 'valid'
         """,
         victim_uuids,
         bank_id,
