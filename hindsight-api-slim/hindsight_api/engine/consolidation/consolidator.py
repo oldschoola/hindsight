@@ -650,6 +650,12 @@ async def _run_consolidation_job(
     # the per-batch log so it can still report processed/total under parallelism.
     # Mutable container so the inner closure can update without a `nonlocal`.
     cumulative_progress = {"processed": 0}
+    # Semantic-dedup caches, keyed by tag group (scope), persisting across ALL fetch
+    # iterations of this run — so a later create dedups against an earlier same-run create
+    # even when they land in different fetch batches (the DB probe misses same-run rows).
+    # A scope's batches run serially across iterations, so a per-scope list is race-free;
+    # distinct scopes get distinct lists (and may run in parallel) so there's no shared state.
+    run_dedup_caches: dict[tuple[str, ...], list[_RunObs]] = {}
     while True:
         # Cap fetch size by remaining round budget
         fetch_limit = (
@@ -926,15 +932,18 @@ async def _run_consolidation_job(
                 llm_batch_num += 1
                 numbered.append((b, llm_batch_num))
             numbered_groups.append(numbered)
+        # Aligned with numbered_groups (both derive from tag_groups in insertion order).
+        group_keys = list(tag_groups.keys())
 
         async def _process_tag_group(
             group_batches: list[tuple[list[dict[str, Any]], int]],
+            group_key: tuple[str, ...],
         ) -> list[_BatchDeltas]:
             # Batches within a group share a tag set and observation scope, so
             # they MUST run serially. Stop early if the op was cancelled mid-group.
-            # One semantic-dedup cache per group: its batches run serially (no race) and
-            # share a scope, so a create can dedup against earlier same-run creates.
-            group_dedup_cache: list[_RunObs] = []
+            # The semantic-dedup cache is per scope and persists across fetch iterations
+            # (run_dedup_caches), so creates dedup against earlier same-run creates.
+            group_dedup_cache = run_dedup_caches.setdefault(group_key, [])
             deltas: list[_BatchDeltas] = []
             for b, n in group_batches:
                 d = await _process_one_llm_batch(b, n, group_dedup_cache)
@@ -958,21 +967,24 @@ async def _run_consolidation_job(
             async def _run_group(
                 group_batches: list[tuple[list[dict[str, Any]], int]],
                 scopes: list[frozenset[str]],
+                group_key: tuple[str, ...],
             ) -> list[_BatchDeltas]:
                 async with sem:
                     async with AsyncExitStack() as stack:
                         for s in scopes:
                             await stack.enter_async_context(scope_locks[s])
-                        return await _process_tag_group(group_batches)
+                        return await _process_tag_group(group_batches, group_key)
 
-            group_results = await asyncio.gather(*(_run_group(g, s) for g, s in zip(numbered_groups, group_scopes)))
+            group_results = await asyncio.gather(
+                *(_run_group(g, s, k) for g, s, k in zip(numbered_groups, group_scopes, group_keys))
+            )
             batch_results: list[_BatchDeltas] = [d for gd in group_results for d in gd]
             any_cancelled = any(d.cancelled for d in batch_results)
         else:
             batch_results = []
             any_cancelled = False
-            for g in numbered_groups:
-                group_deltas = await _process_tag_group(g)
+            for g, k in zip(numbered_groups, group_keys):
+                group_deltas = await _process_tag_group(g, k)
                 batch_results.extend(group_deltas)
                 if any(d.cancelled for d in group_deltas):
                     any_cancelled = True
