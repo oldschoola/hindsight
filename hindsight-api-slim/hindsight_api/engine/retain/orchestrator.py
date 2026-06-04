@@ -11,6 +11,7 @@ import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -109,6 +110,25 @@ logger = logging.getLogger(__name__)
 
 RetainOutboxCallback = Callable[[asyncpg.Connection], Awaitable[None]]
 RetainOutboxCallbackFactory = Callable[[list[RetainContentDict]], RetainOutboxCallback | None]
+
+
+def _resolve_narrator(profile_name: str, bank_id: str) -> str | None:
+    """Resolve the narrator (memory owner) used to prime fact extraction.
+
+    The narrator is injected as a "Narrator: {name}" line in fact extraction and
+    is stamped into the who-dimension of every first-person fact — and the
+    observations later consolidated from those facts. That is correct for a named
+    agent retaining its own logs, but harmful when ``name`` is just the bank_id:
+    on auto-create the bank ``name`` defaults to ``bank_id``, which is typically a
+    routing key (e.g. ``my-agent::channel-456::user-789``), not a speaker. Priming
+    extraction with a routing key embeds that string into stored fact text and
+    pollutes downstream observations (issue #1680). Suppress it in that case.
+
+    Returns the narrator name, or ``None`` to omit the Narrator line entirely.
+    """
+    if profile_name == bank_id:
+        return None
+    return profile_name
 
 
 def _build_retain_params(contents_dicts, document_tags=None, doc_contents=None):
@@ -439,7 +459,9 @@ async def retain_batch(
 
     # Get bank profile
     profile = await bank_utils.get_bank_profile(pool, bank_id)
-    agent_name = profile["name"]
+    # Suppress the narrator when name == bank_id (auto-create default) — see
+    # _resolve_narrator for why a routing-key narrator pollutes extraction (#1680).
+    agent_name = _resolve_narrator(profile["name"], bank_id)
 
     # Convert dicts to RetainContent objects
     contents = _build_contents(contents_dicts, document_tags)
@@ -952,19 +974,29 @@ async def _streaming_retain_batch(
                 tags=source.tags,
                 observation_scopes=source.observation_scopes,
             )
-            extracted, processed, chunk_meta, usage = await _extract_and_embed(
-                [content],
-                llm_config,
-                agent_name,
-                config,
-                embeddings_model,
-                format_date_fn,
-                fact_type_override,
-                log_buffer,
-                pool,
-                operation_id,
-                schema,
-            )
+            # Attribute this chunk's extraction LLM call to its document, so the
+            # trace row carries document_id (a document accrues one such trace
+            # per retain/re-retain). Per-call: the operation-level trace context
+            # is shared across a batch's documents.
+            from ..llm_trace import reset_call_metadata, set_call_metadata
+
+            meta_token = set_call_metadata({"document_id": effective_doc_id})
+            try:
+                extracted, processed, chunk_meta, usage = await _extract_and_embed(
+                    [content],
+                    llm_config,
+                    agent_name,
+                    config,
+                    embeddings_model,
+                    format_date_fn,
+                    fact_type_override,
+                    log_buffer,
+                    pool,
+                    operation_id,
+                    schema,
+                )
+            finally:
+                reset_call_metadata(meta_token)
             await chunk_queue.put((global_idx, content, extracted, processed, chunk_meta, usage))
             # Memory: release the chunk text from the shared list now that it's
             # been extracted and queued. The queued RetainContent holds its own copy.
@@ -1181,20 +1213,17 @@ async def _streaming_retain_batch(
             async with acquire_with_retry(pool) as conn:
                 async with conn.transaction():
                     # --- Document ownership gate ---
-                    # Lock the document row to serialize all concurrent writers.
-                    # SELECT ... FOR UPDATE doesn't lock non-existent rows, so we
-                    # first ensure the row exists with a lightweight upsert, THEN lock it.
-                    # The content_hash='__pending__' placeholder is immediately overwritten
-                    # by handle_document_tracking or upsert_document_metadata below.
-                    await conn.execute(
-                        f"INSERT INTO {fq_table('documents')} (id, bank_id, original_text, content_hash) "
-                        f"VALUES ($1, $2, '', '__pending__') "
-                        f"ON CONFLICT (id, bank_id) DO NOTHING",
-                        effective_doc_id,
-                        bank_id,
-                    )
-                    existing_hash = await conn.fetchval(
-                        f"SELECT content_hash FROM {fq_table('documents')} WHERE id = $1 AND bank_id = $2 FOR UPDATE",
+                    # Ensure the document row exists, lock it to serialize all
+                    # concurrent same-document writers, and read its pre-existing
+                    # hash. The lock prevents interleaved retains from corrupting
+                    # each other in handle_document_tracking; the returned hash
+                    # ('__pending__' for a freshly inserted row) drives the
+                    # takeover check for later batches below. The PG/Oracle split
+                    # lives in the ops layer because Oracle can't do this upsert +
+                    # RETURNING in a single statement.
+                    existing_hash = await pool.ops.lock_document_for_write(
+                        conn,
+                        fq_table("documents"),
                         effective_doc_id,
                         bank_id,
                     )
@@ -1501,6 +1530,35 @@ async def _streaming_retain_batch(
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class _ChunkDiff:
+    """Classification of chunk indices when diffing new content vs stored chunks."""
+
+    unchanged: list[int]
+    changed: list[int]
+    new: list[int]
+    removed: list[int]
+
+
+def _classify_chunk_diff(existing_by_index: dict[int, Any], new_hashes: dict[int, str]) -> _ChunkDiff:
+    """Classify chunk indices by comparing freshly computed ``new_hashes``
+    (index -> content hash) against the currently stored chunks
+    (``existing_by_index``: index -> chunk row)."""
+    diff = _ChunkDiff(unchanged=[], changed=[], new=[], removed=[])
+    for idx, new_hash in new_hashes.items():
+        existing = existing_by_index.get(idx)
+        if existing and existing.content_hash == new_hash:
+            diff.unchanged.append(idx)
+        elif existing:
+            diff.changed.append(idx)
+        else:
+            diff.new.append(idx)
+    for idx in existing_by_index:
+        if idx not in new_hashes:
+            diff.removed.append(idx)
+    return diff
+
+
 async def _try_delta_retain(
     pool: Any,
     embeddings_model,
@@ -1570,18 +1628,11 @@ async def _try_delta_retain(
     existing_by_index = {c.chunk_index: c for c in existing_chunks}
     new_hashes = {idx: chunk_storage.compute_chunk_hash(text) for idx, text in new_chunks_with_contents.items()}
 
-    unchanged_indices, changed_indices, new_indices, removed_indices = [], [], [], []
-    for idx, new_hash in new_hashes.items():
-        existing = existing_by_index.get(idx)
-        if existing and existing.content_hash == new_hash:
-            unchanged_indices.append(idx)
-        elif existing:
-            changed_indices.append(idx)
-        else:
-            new_indices.append(idx)
-    for idx in existing_by_index:
-        if idx not in new_hashes:
-            removed_indices.append(idx)
+    diff = _classify_chunk_diff(existing_by_index, new_hashes)
+    unchanged_indices = diff.unchanged
+    changed_indices = diff.changed
+    new_indices = diff.new
+    removed_indices = diff.removed
 
     log_buffer.append(
         f"[delta] Chunk diff: {len(unchanged_indices)} unchanged, "
@@ -1628,20 +1679,85 @@ async def _try_delta_retain(
             document_body_override=document_body_override,
         )
 
-    # Extract facts and generate embeddings (shared pipeline)
-    extracted_facts, processed_facts, new_chunk_metadata, usage = await _extract_and_embed(
-        delta_contents,
-        llm_config,
-        agent_name,
-        config,
-        embeddings_model,
-        format_date_fn,
-        fact_type_override,
-        log_buffer,
-        pool,
-        operation_id,
-        schema,
-    )
+    # Freshness recheck BEFORE the (expensive) LLM extraction.
+    #
+    # We snapshotted the document hash and chunks outside any lock. A concurrent
+    # retain for the same document may have committed a new version while we were
+    # chunking and diffing. Re-read the current hash; if it changed, recompute the
+    # diff against the now-committed chunk state. If the concurrent writer already
+    # produced content identical to ours, there is nothing left to extract — skip
+    # the LLM call entirely (metadata-only). If it still differs, fall back to the
+    # streaming path (which dedups per-chunk and re-locks the document).
+    #
+    # This narrows — but cannot fully close — the race window: a writer can still
+    # commit during our extraction. The post-extraction hash gate inside the write
+    # transaction remains the correctness backstop; this check exists purely to
+    # avoid burning LLM tokens on work a concurrent request already did.
+    async with acquire_with_retry(pool) as conn:
+        recheck_hash = await conn.fetchval(
+            f"SELECT content_hash FROM {fq_table('documents')} WHERE id = $1 AND bank_id = $2",
+            effective_doc_id,
+            bank_id,
+        )
+    if recheck_hash is not None and doc_hash_at_load is not None and recheck_hash != doc_hash_at_load:
+        log_buffer.append(
+            f"[delta] Document {effective_doc_id} changed before extraction "
+            f"(concurrent retain) — rechecking diff against current state"
+        )
+        async with acquire_with_retry(pool) as conn:
+            current_chunks = await chunk_storage.load_existing_chunks(conn, bank_id, effective_doc_id)
+        if not current_chunks or any(c.content_hash is None for c in current_chunks):
+            log_buffer.append("[delta] Recheck: current chunks unavailable — falling back to full retain")
+            logger.info("\n" + "\n".join(log_buffer) + "\n")
+            return None
+        current_by_index = {c.chunk_index: c for c in current_chunks}
+        recheck = _classify_chunk_diff(current_by_index, new_hashes)
+        if not (recheck.changed or recheck.new or recheck.removed):
+            log_buffer.append(
+                "[delta] Recheck: concurrent retain already stored identical content — "
+                "skipping extraction, updating metadata only"
+            )
+            return await _delta_metadata_only(
+                pool,
+                bank_id,
+                contents_dicts,
+                contents,
+                effective_doc_id,
+                document_tags,
+                log_buffer,
+                start_time,
+                outbox_callback,
+                document_body_override=document_body_override,
+            )
+        log_buffer.append(
+            f"[delta] Recheck: {len(recheck.changed) + len(recheck.new) + len(recheck.removed)} chunks still differ — "
+            f"falling back to full retain"
+        )
+        logger.info("\n" + "\n".join(log_buffer) + "\n")
+        return None
+
+    # Extract facts and generate embeddings (shared pipeline). Attribute these
+    # extraction calls to the document so the delta re-retain's trace also binds
+    # to it (a document accrues one trace per full/delta retain).
+    from ..llm_trace import reset_call_metadata, set_call_metadata
+
+    meta_token = set_call_metadata({"document_id": effective_doc_id})
+    try:
+        extracted_facts, processed_facts, new_chunk_metadata, usage = await _extract_and_embed(
+            delta_contents,
+            llm_config,
+            agent_name,
+            config,
+            embeddings_model,
+            format_date_fn,
+            fact_type_override,
+            log_buffer,
+            pool,
+            operation_id,
+            schema,
+        )
+    finally:
+        reset_call_metadata(meta_token)
 
     # Database transaction
     result_unit_ids: list[list[str]] = []
