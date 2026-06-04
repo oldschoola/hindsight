@@ -48,12 +48,49 @@ def _write_retain_status(status: str, **extra):
         pass
 
 
+def _normalize_blocks_to_text(content) -> str:
+    """Flatten a content payload to a single text string.
+
+    Cursor 3 emits content as a list of typed blocks; we keep text blocks and
+    inline a compact tool_use marker so retain.py's downstream Answer:/Thought:
+    handling still sees recognizable structure.
+    """
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content) if content else ""
+    parts = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype == "text":
+            text = block.get("text", "")
+            if text:
+                parts.append(text)
+        elif btype == "tool_use":
+            name = block.get("name", "tool")
+            parts.append(f"[tool_use:{name}]")
+        elif btype == "tool_result":
+            parts.append("[tool_result]")
+    return "\n".join(parts)
+
+
 def read_transcript(transcript_path: str) -> list:
     """Read a JSONL transcript file and return list of message dicts.
 
-    Supports both flat format and nested format:
-      Flat: {role: "user", content: "..."}
-      Nested: {type: "user", message: {role: "user", content: "..."}}
+    Supports three shapes seen in the wild:
+      Flat:        {role: "user", content: "..."}
+      Type-nested: {type: "user", message: {role: "user", content: "..."}}
+      Role-nested: {role: "user", message: {content: [...blocks...]}}  (Cursor 3.x)
+
+    The role-nested form is what Cursor 3.6.31 writes to
+    ``~/.cursor/projects/<workspace>/agent-transcripts/<conv>/<conv>.jsonl``:
+    a top-level ``role`` plus a ``message.content`` list of typed text/tool
+    blocks. The earlier two-branch parser silently dropped every line of those
+    transcripts because the top-level didn't have ``content`` and the
+    ``type`` key wasn't present, so retain.py bailed with
+    ``empty_transcript`` on every Cursor 3 stop hook.
     """
     if not transcript_path or not os.path.isfile(transcript_path):
         return []
@@ -66,15 +103,33 @@ def read_transcript(transcript_path: str) -> list:
                     continue
                 try:
                     entry = json.loads(line)
-                    # Nested format
-                    if entry.get("type") in ("user", "assistant"):
-                        msg = entry.get("message", {})
-                        if isinstance(msg, dict) and msg.get("role"):
-                            messages.append(msg)
-                    # Flat format
-                    elif "role" in entry and "content" in entry:
-                        messages.append(entry)
                 except json.JSONDecodeError:
+                    continue
+
+                if not isinstance(entry, dict):
+                    continue
+
+                # Type-nested: {type: "user", message: {role, content, ...}}
+                if entry.get("type") in ("user", "assistant"):
+                    msg = entry.get("message", {})
+                    if isinstance(msg, dict) and msg.get("role"):
+                        if "content" in msg:
+                            msg = {**msg, "content": _normalize_blocks_to_text(msg.get("content"))}
+                        messages.append(msg)
+                    continue
+
+                # Role-nested (Cursor 3.x):
+                #   {role: "user", message: {content: [...blocks...]}}
+                role = entry.get("role")
+                if role in ("user", "assistant") and isinstance(entry.get("message"), dict):
+                    msg_obj = entry["message"]
+                    content = _normalize_blocks_to_text(msg_obj.get("content"))
+                    messages.append({"role": role, "content": content})
+                    continue
+
+                # Flat: {role, content}
+                if role in ("user", "assistant") and "content" in entry:
+                    messages.append({"role": role, "content": _normalize_blocks_to_text(entry.get("content"))})
                     continue
     except OSError:
         pass

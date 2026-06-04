@@ -146,6 +146,61 @@ class TestRetainHook:
         importlib.reload(retain)
         retain.main()
 
+    def test_read_transcript_parses_flat_format(self, tmp_path):
+        """Sanity: flat shape {role, content} still works after the parser
+        rewrite."""
+        import retain
+        transcript = tmp_path / "flat.jsonl"
+        transcript.write_text(
+            '{"role": "user", "content": "Hello"}\n'
+            '{"role": "assistant", "content": "Hi back"}\n'
+        )
+        msgs = retain.read_transcript(str(transcript))
+        assert len(msgs) == 2
+        assert msgs[0] == {"role": "user", "content": "Hello"}
+        assert msgs[1] == {"role": "assistant", "content": "Hi back"}
+
+    def test_read_transcript_parses_type_nested_format(self, tmp_path):
+        """Sanity: type-nested shape {type: "user", message: {...}}."""
+        import retain
+        transcript = tmp_path / "typenested.jsonl"
+        transcript.write_text(
+            '{"type": "user", "message": {"role": "user", "content": "Hello"}}\n'
+            '{"type": "assistant", "message": {"role": "assistant", "content": "Hi"}}\n'
+        )
+        msgs = retain.read_transcript(str(transcript))
+        assert len(msgs) == 2
+        assert msgs[0]["role"] == "user" and msgs[0]["content"] == "Hello"
+        assert msgs[1]["role"] == "assistant" and msgs[1]["content"] == "Hi"
+
+    def test_read_transcript_parses_cursor3_role_nested_with_block_content(self, tmp_path):
+        """Regression: Cursor 3.6.31's stop hook writes transcripts as
+        {role: "user", message: {content: [{type:"text", text:"..."}, ...]}}.
+
+        The pre-fix parser checked entry["type"] (missing) or top-level
+        entry["content"] (also missing — content is under message) and
+        silently dropped every line. retain.py then bailed with
+        empty_transcript on every Cursor 3 stop hook, even though the
+        transcript file existed and had real content.
+        """
+        import retain
+        transcript = tmp_path / "cursor3.jsonl"
+        transcript.write_text(
+            '{"role":"user","message":{"content":[{"type":"text","text":"Remember Vim over Emacs"}]}}\n'
+            '{"role":"assistant","message":{"content":['
+            '{"type":"text","text":"Got it. Saving."},'
+            '{"type":"tool_use","name":"Shell","input":{"command":"curl ..."}}]}}\n'
+        )
+        msgs = retain.read_transcript(str(transcript))
+        assert len(msgs) == 2
+        assert msgs[0]["role"] == "user"
+        assert "Remember Vim over Emacs" in msgs[0]["content"]
+        assert msgs[1]["role"] == "assistant"
+        assert "Got it. Saving." in msgs[1]["content"]
+        # Tool-use blocks are surfaced as compact markers (not dropped) so
+        # downstream Answer:/Thought: detection still sees coherent structure.
+        assert "[tool_use:Shell]" in msgs[1]["content"]
+
     def test_retains_transcript(self, monkeypatch, tmp_path):
         monkeypatch.setenv("CURSOR_PLUGIN_ROOT", "/nonexistent")
         monkeypatch.setenv("HINDSIGHT_RETAIN_EVERY_N_TURNS", "1")
