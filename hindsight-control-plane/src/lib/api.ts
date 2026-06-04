@@ -749,24 +749,6 @@ export class ControlPlaneClient {
   }
 
   /**
-   * Permanently delete invalidated memories (storage reclamation). Optionally
-   * restrict to memories invalidated at least `olderThanDays` ago.
-   */
-  async purgeInvalidatedMemories(bankId: string, olderThanDays?: number) {
-    return this.fetchApi<{ purged_count: number }>(
-      `/api/memories/purge-invalidated?bank_id=${encodeURIComponent(bankId)}`,
-      {
-        method: "POST",
-        body: JSON.stringify(
-          olderThanDays != null
-            ? { bank_id: bankId, older_than_days: olderThanDays }
-            : { bank_id: bankId }
-        ),
-      }
-    );
-  }
-
-  /**
    * Get chunk
    */
   async getChunk(chunkId: string) {

@@ -1504,8 +1504,7 @@
         "retain": "Failed to batch retain",
         "retainAsync": "Failed to batch retain async",
         "history": "Failed to fetch observation history",
-        "update": "Failed to update memory",
-        "purge": "Failed to purge invalidated memories"
+        "update": "Failed to update memory"
       },
       "documents": {
         "fetchList": "Failed to fetch documents",

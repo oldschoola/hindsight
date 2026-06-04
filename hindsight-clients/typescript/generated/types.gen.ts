@@ -2561,34 +2561,6 @@ export type OperationsListResponse = {
 };
 
 /**
- * PurgeInvalidatedRequest
- *
- * Request model for permanently deleting invalidated memory units (GC).
- */
-export type PurgeInvalidatedRequest = {
-  /**
-   * Older Than Days
-   *
-   * Only purge memories invalidated at least this many days ago. Omit to purge all invalidated memories regardless of age.
-   */
-  older_than_days?: number | null;
-};
-
-/**
- * PurgeInvalidatedResponse
- *
- * Response model for the purge-invalidated endpoint.
- */
-export type PurgeInvalidatedResponse = {
-  /**
-   * Purged Count
-   *
-   * Number of invalidated memory units permanently deleted.
-   */
-  purged_count: number;
-};
-
-/**
  * RecallRequest
  *
  * Request model for recall endpoint.
@@ -6021,47 +5993,6 @@ export type RecoverConsolidationResponses = {
 
 export type RecoverConsolidationResponse2 =
   RecoverConsolidationResponses[keyof RecoverConsolidationResponses];
-
-export type PurgeInvalidatedMemoriesData = {
-  /**
-   * Request
-   */
-  body?: PurgeInvalidatedRequest | null;
-  headers?: {
-    /**
-     * Authorization
-     */
-    authorization?: string | null;
-  };
-  path: {
-    /**
-     * Bank Id
-     */
-    bank_id: string;
-  };
-  query?: never;
-  url: "/v1/default/banks/{bank_id}/memories/purge-invalidated";
-};
-
-export type PurgeInvalidatedMemoriesErrors = {
-  /**
-   * Validation Error
-   */
-  422: HttpValidationError;
-};
-
-export type PurgeInvalidatedMemoriesError =
-  PurgeInvalidatedMemoriesErrors[keyof PurgeInvalidatedMemoriesErrors];
-
-export type PurgeInvalidatedMemoriesResponses = {
-  /**
-   * Successful Response
-   */
-  200: PurgeInvalidatedResponse;
-};
-
-export type PurgeInvalidatedMemoriesResponse =
-  PurgeInvalidatedMemoriesResponses[keyof PurgeInvalidatedMemoriesResponses];
 
 export type ClearMemoryObservationsData = {
   body?: never;

@@ -2824,51 +2824,6 @@ paths:
       summary: Recover failed consolidation
       tags:
       - Banks
-  /v1/default/banks/{bank_id}/memories/purge-invalidated:
-    post:
-      description: "Permanently delete invalidated memory units (storage reclamation).\
-        \ This is the irreversible second phase of curation: invalidate soft-retires\
-        \ a memory (reversible); purge hard-deletes invalidated rows past an optional\
-        \ retention window. Valid memories are never affected."
-      operationId: purge_invalidated_memories
-      parameters:
-      - explode: false
-        in: path
-        name: bank_id
-        required: true
-        schema:
-          title: Bank Id
-          type: string
-        style: simple
-      - explode: false
-        in: header
-        name: authorization
-        required: false
-        schema:
-          nullable: true
-          type: string
-        style: simple
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/PurgeInvalidatedRequest'
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/PurgeInvalidatedResponse'
-          description: Successful Response
-        "422":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-          description: Validation Error
-      summary: Purge invalidated memories
-      tags:
-      - Memory
   /v1/default/banks/{bank_id}/memories/{memory_id}/observations:
     delete:
       description: Delete all observations derived from a specific memory and reset
@@ -6679,29 +6634,6 @@ components:
       - operations
       - total
       title: OperationsListResponse
-    PurgeInvalidatedRequest:
-      description: Request model for permanently deleting invalidated memory units
-        (GC).
-      example:
-        older_than_days: 30
-      properties:
-        older_than_days:
-          minimum: 0.0
-          nullable: true
-          type: integer
-      title: PurgeInvalidatedRequest
-    PurgeInvalidatedResponse:
-      description: Response model for the purge-invalidated endpoint.
-      example:
-        purged_count: 825
-      properties:
-        purged_count:
-          description: Number of invalidated memory units permanently deleted.
-          title: Purged Count
-          type: integer
-      required:
-      - purged_count
-      title: PurgeInvalidatedResponse
     RecallRequest:
       description: Request model for recall endpoint.
       example:

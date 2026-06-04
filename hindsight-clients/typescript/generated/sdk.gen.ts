@@ -166,9 +166,6 @@ import type {
   LlmRequestStatsResponses,
   MetricsEndpointMetricsGetData,
   MetricsEndpointMetricsGetResponses,
-  PurgeInvalidatedMemoriesData,
-  PurgeInvalidatedMemoriesErrors,
-  PurgeInvalidatedMemoriesResponses,
   RecallMemoriesData,
   RecallMemoriesErrors,
   RecallMemoriesResponses,
@@ -1072,27 +1069,6 @@ export const recoverConsolidation = <ThrowOnError extends boolean = false>(
     RecoverConsolidationErrors,
     ThrowOnError
   >({ url: "/v1/default/banks/{bank_id}/consolidation/recover", ...options });
-
-/**
- * Purge invalidated memories
- *
- * Permanently delete invalidated memory units (storage reclamation). This is the irreversible second phase of curation: invalidate soft-retires a memory (reversible); purge hard-deletes invalidated rows past an optional retention window. Valid memories are never affected.
- */
-export const purgeInvalidatedMemories = <ThrowOnError extends boolean = false>(
-  options: Options<PurgeInvalidatedMemoriesData, ThrowOnError>
-) =>
-  (options.client ?? client).post<
-    PurgeInvalidatedMemoriesResponses,
-    PurgeInvalidatedMemoriesErrors,
-    ThrowOnError
-  >({
-    url: "/v1/default/banks/{bank_id}/memories/purge-invalidated",
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-  });
 
 /**
  * Clear observations for a memory

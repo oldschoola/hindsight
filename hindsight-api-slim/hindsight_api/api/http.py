@@ -1433,27 +1433,6 @@ class UpdateMemoryRequest(BaseModel):
         return self
 
 
-class PurgeInvalidatedRequest(BaseModel):
-    """Request model for permanently deleting invalidated memory units (GC)."""
-
-    model_config = ConfigDict(json_schema_extra={"example": {"older_than_days": 30}})
-
-    older_than_days: int | None = Field(
-        default=None,
-        ge=0,
-        description="Only purge memories invalidated at least this many days ago. "
-        "Omit to purge all invalidated memories regardless of age.",
-    )
-
-
-class PurgeInvalidatedResponse(BaseModel):
-    """Response model for the purge-invalidated endpoint."""
-
-    model_config = ConfigDict(json_schema_extra={"example": {"purged_count": 825}})
-
-    purged_count: int = Field(description="Number of invalidated memory units permanently deleted.")
-
-
 class DeleteDocumentResponse(BaseModel):
     """Response model for delete document endpoint."""
 
@@ -5588,45 +5567,6 @@ def _register_routes(app: FastAPI):
 
             error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
             logger.error(f"Error in POST /v1/default/banks/{bank_id}/consolidation/recover: {error_detail}")
-            raise HTTPException(status_code=500, detail=str(e))
-
-    @app.post(
-        "/v1/default/banks/{bank_id}/memories/purge-invalidated",
-        response_model=PurgeInvalidatedResponse,
-        summary="Purge invalidated memories",
-        description="Permanently delete invalidated memory units (storage reclamation). "
-        "This is the irreversible second phase of curation: invalidate soft-retires a "
-        "memory (reversible); purge hard-deletes invalidated rows past an optional "
-        "retention window. Valid memories are never affected.",
-        operation_id="purge_invalidated_memories",
-        tags=["Memory"],
-    )
-    @audited("purge_invalidated_memories", request_param=None)
-    async def api_purge_invalidated(
-        bank_id: str,
-        request: PurgeInvalidatedRequest | None = None,
-        request_context: RequestContext = Depends(get_request_context),
-    ):
-        """Permanently delete invalidated memory units."""
-        try:
-            older_than_days = request.older_than_days if request else None
-            result = await app.state.memory.purge_invalidated_memories(
-                bank_id,
-                older_than_days=older_than_days,
-                request_context=request_context,
-            )
-            return PurgeInvalidatedResponse(purged_count=result["purged_count"])
-        except OperationValidationError as e:
-            raise HTTPException(status_code=e.status_code, detail=e.reason)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        except (AuthenticationError, HTTPException):
-            raise
-        except Exception as e:
-            import traceback
-
-            error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
-            logger.error(f"Error in POST /v1/default/banks/{bank_id}/memories/purge-invalidated: {error_detail}")
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.delete(

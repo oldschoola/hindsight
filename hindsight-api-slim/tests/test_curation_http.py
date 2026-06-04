@@ -1,9 +1,9 @@
 """HTTP integration tests for memory curation endpoints.
 
-Exercises the FastAPI routes (PATCH /memories/{id} and
-POST /memories/purge-invalidated) end-to-end over an ASGI transport, covering
-the happy path, validation, and not-found mapping. The deeper cascade behaviour
-is covered at the engine level in test_memory_curation.py.
+Exercises the FastAPI PATCH /memories/{id} route end-to-end over an ASGI
+transport, covering the happy path, validation, and not-found mapping. The
+deeper cascade behaviour is covered at the engine level in
+test_memory_curation.py.
 """
 
 import uuid
@@ -47,7 +47,7 @@ async def _insert_fact(memory: MemoryEngine, bank_id: str, text: str) -> str:
 
 
 @pytest.mark.asyncio
-async def test_patch_invalidate_and_purge_over_http(api_client, memory):
+async def test_patch_invalidate_and_revert_over_http(api_client, memory):
     bank_id = f"curation-http-{uuid.uuid4().hex[:8]}"
     mem_id = await _insert_fact(memory, bank_id, "srv-04 runs PostgreSQL 14.")
 
@@ -66,17 +66,14 @@ async def test_patch_invalidate_and_purge_over_http(api_client, memory):
     assert resp.status_code == 200
     assert resp.json()["state"] == "invalidated"
 
-    # Purge reclaims it
-    resp = await api_client.post(
-        f"/v1/default/banks/{bank_id}/memories/purge-invalidated",
-        json={},
+    # Revert via PATCH
+    resp = await api_client.patch(
+        f"/v1/default/banks/{bank_id}/memories/{mem_id}",
+        json={"state": "valid"},
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["purged_count"] == 1
-
-    # Gone after purge
-    resp = await api_client.get(f"/v1/default/banks/{bank_id}/memories/{mem_id}")
-    assert resp.status_code == 404
+    assert resp.json()["state"] == "valid"
+    assert resp.json()["invalidation_reason"] is None
 
     await memory.delete_bank(bank_id, request_context=RequestContext())
 
